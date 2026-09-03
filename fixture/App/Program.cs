@@ -8,5 +8,6 @@ public static class Program
     {
         Console.WriteLine(Greeter.Greet("world"));
         Console.WriteLine(Fixture.Core.Generated.BuildInfo.Stamp());
+        Console.WriteLine($"🎉 {Party.Cheer("world")}");
     }
 }

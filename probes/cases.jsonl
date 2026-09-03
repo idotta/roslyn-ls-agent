@@ -7,3 +7,6 @@
 {"name":"source-generated-refs-symbol","args":"refs Fixture.Core.Generated.BuildInfo.Stamp --root fixture","exit":"0","expect":"<generated>/Gen/BuildInfo.g.cs:5|App/Program.cs:10|public static string Stamp()"}
 {"name":"source-generated-refs-position","args":"refs App/Program.cs:10:60 --root fixture","exit":"0","expect":"<generated>/Gen/BuildInfo.g.cs:5|App/Program.cs:10|public static string Stamp()"}
 {"name":"source-generated-refs-json","args":"refs Fixture.Core.Generated.BuildInfo.Stamp --root fixture --json","exit":"0","expect":"'count': 2|'path': '<generated>/Gen/BuildInfo.g.cs'|'generated': true|'line': 5"}
+{"name":"non-ascii-refs-symbol","args":"refs Fixture.Core.Party.Cheer --root fixture","exit":"0","expect":"Core/Party.cs:5|App/Program.cs:11|🎉"}
+{"name":"non-ascii-refs-position","args":"refs App/Program.cs:11:39 --root fixture","exit":"0","expect":"Core/Party.cs:5|App/Program.cs:11"}
+{"name":"non-ascii-refs-json","args":"refs Fixture.Core.Party.Cheer --root fixture --json","exit":"0","expect":"'path': 'App/Program.cs'|'line': 11|'column': 39"}

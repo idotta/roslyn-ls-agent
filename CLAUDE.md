@@ -22,6 +22,18 @@ dotnet build src/Csx/Csx.csproj          # build
 - **Positions are UTF-16 code units** and the server does not negotiate otherwise. .NET string
   indices are already UTF-16, so naive indexing is correct — counting runes or UTF-8 bytes is the
   bug. `LspClient.InitializeAsync` asserts the encoding and refuses to run if it ever changes.
+- **Do not add `Console.OutputEncoding = UTF8`.** It looks required — this machine's console is
+  code page 850 — but it fixes nothing and was tried and reverted. .NET writes a real console
+  handle with `WriteConsoleW`, so the code page never applies, and redirected stdout is already
+  UTF-8. Verified both ways against the emoji fixture line. Mojibake in a PowerShell pipeline
+  (`csx refs ... | Select-String`) is PowerShell decoding our bytes with its own
+  `[Console]::OutputEncoding`, which nothing `csx` sets can change.
+- **The non-ASCII probe cases are the first host-dependent ones.** Both workflows run
+  `ubuntu-latest`, where the encoding question does not arise; a regression here would be green
+  on CI and red in Git Bash. Also note `File.ReadAllTextAsync` substitutes U+FFFD for invalid
+  bytes rather than throwing, so a fixture file corrupted to a non-UTF-8 encoding would desync
+  the `didOpen` text from what Roslyn parses off disk — silently, except that
+  `non-ascii-refs-position` then fails.
 - **Server flags live only in `src/Csx/ServerArgs.cs`.** The thin client forwards options it does
   not recognise straight through to the server, so a renamed flag produces no error at all. The
   probes are the only thing that catches it.

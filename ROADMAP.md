@@ -3,7 +3,7 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-03, after the Milestone 2 source-generator fixture.
+Last updated: 2026-09-03, after the Milestone 2 non-ASCII fixture.
 
 ## Status
 
@@ -39,10 +39,19 @@ Fixture:
       staleness itself. No case edits a file mid-session, so nothing yet proves a stale
       generated symbol gets refreshed rather than served from cache — that needs either a
       long-lived daemon (Milestone 3) or a case that mutates the fixture and re-queries.
-- [ ] A file with **non-ASCII characters** on a line containing a symbol. Use an **astral-plane
+- [x] A file with **non-ASCII characters** on a line containing a symbol. Use an **astral-plane
       character (an emoji)**, not just an accented letter: positions are UTF-16 code units, which
       .NET string indices already are, so an accent passes even on a broken implementation. Only
       a surrogate pair catches code that counts runes or UTF-8 bytes.
+      `fixture/Core/Party.cs` declares `Cheer` on an emoji-bearing line; `App/Program.cs:11`
+      calls it with the emoji *before* the call, putting `Cheer` at UTF-16 column 39 (rune
+      counting gives 38, UTF-8 bytes 41). No code in `csx` counts characters today —
+      `LocateAsync` forwards the caller's column and `Output` renders the server's — so these
+      cases pin the server staying UTF-16 behaviourally, `didOpen` text matching what Roslyn
+      parses off disk, and insurance for `def` / `outline` later. **Known gap:** the position
+      case catches a rune-counting error (column 38 lands on the `.` and resolves `Party`, so
+      the case fails) but not a UTF-8 one (41 is still inside `Cheer`); the `'column': 39`
+      assertion in the JSON case is what covers that direction.
 - [ ] One **deliberate type error** for `csx diag`. It must live in **App**, or a new
       project — never in Core. `probes/run.sh` compiles Core to arm its `CS9057` guard (the
       analyzer-vs-compiler version mismatch that otherwise degrades to a silently absent
@@ -67,11 +76,11 @@ Also: the first document opened only reports errors that need no loaded project 
 semicolon, say). Re-pull after load settles rather than trusting the first response, and add a
 probe case pinning that.
 
-- [ ] Expand `cases.jsonl` to cover the two remaining fixture cases. The generator has three:
-      `source-generated-refs-symbol`, `-position` and `-json`. The symbol and position forms are
-      kept separate on purpose — `LocateAsync`'s position branch never touches the server, so a
-      single case would pass with `workspace/symbol` coverage of generated symbols entirely
-      broken.
+- [ ] Expand `cases.jsonl` to cover the remaining fixture case (the deliberate type error). The
+      generator and the non-ASCII line have three each: `-symbol`, `-position` and `-json`. The
+      symbol and position forms are kept separate on purpose — `LocateAsync`'s position branch
+      never touches the server, so a single case would pass with `workspace/symbol` coverage of
+      generated symbols entirely broken.
 
 ## Milestone 3 — daemon and skill
 
@@ -102,7 +111,7 @@ agent to run `csx ready` once at session start.
 - [x] Zero non-Microsoft C#-specific dependencies in the query path
 - [x] `csx refs` on a cross-project symbol returns correct `file:line` plus context
 - [x] `csx refs` on a source-generated symbol resolves
-- [ ] Column positions correct on the non-ASCII fixture line
+- [x] Column positions correct on the non-ASCII fixture line
 - [ ] `csx diag` finds the deliberate error and does *not* report it before load completes
 - [x] Probe suite fails loudly when the server returns empty due to premature querying
 - [x] `bump.yml` opens a PR that is gated (see the `probes` commit status caveat in the README)

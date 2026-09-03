@@ -12,8 +12,8 @@ Two constraints drive the design:
 2. **Always current.** A weekly cron bumps the pin and a probe suite gates the bump.
 
 Status: **Milestone 1** — `csx ready` and `csx refs`, cross-project fixture, probe gate, both
-workflows. `def` / `diag` / `outline` / `impl` / `sym`, the source-generator and non-ASCII
-fixture cases, and daemon mode are Milestones 2–4. See [ROADMAP.md](ROADMAP.md).
+workflows, plus the source-generator and non-ASCII fixture cases. `def` / `diag` / `outline` /
+`impl` / `sym`, the deliberate type error and daemon mode are Milestones 2–4. See [ROADMAP.md](ROADMAP.md).
 
 ## Use
 
@@ -136,7 +136,7 @@ weekly bump.
 |---|---|
 | Async project load returning empty instead of erroring | `WaitReadyAsync` waits for `workspace/projectInitializationComplete`, then polls a sentinel symbol until it resolves, then fails loudly on timeout. Never `sleep`. |
 | A sentinel that is itself the thing being queried | The sentinel is inferred from a type declaration in the tree, so "symbol absent" and "workspace not loaded" stay distinguishable. The target gets a 10 s grace poll after readiness. |
-| UTF-16 position encoding | The server does not advertise `positionEncoding`, which per LSP 3.17 means utf-16 — the same unit as a .NET string index. `csx` asserts this at `initialize` and refuses to run if a future build negotiates utf-8. |
+| UTF-16 position encoding | The server does not advertise `positionEncoding`, which per LSP 3.17 means utf-16 — the same unit as a .NET string index. `csx` asserts this at `initialize` and refuses to run if a future build negotiates utf-8. A fixture line carrying an astral-plane character (a surrogate pair, so utf-16 and rune counts differ) pins the reported column at 39 in three cases; an accented letter would pass even on a broken implementation. |
 | Roslyn ignoring unopened documents | Every query opens its document via `textDocument/didOpen` first — except source-generated ones, which the server owns and answers for without it. |
 | No auto-restore | `probes/run.sh` runs `dotnet restore` on the fixture before starting the server. |
 | Source-generated symbols rendering as a nonexistent path | Generated documents come back under a `roslyn-source-generated:` URI. `new Uri(u).LocalPath` does not throw for one, it returns `/BuildInfo.g.cs`, so `PathUri.Display` branches on the scheme and labels them `<generated>/<assembly>/<hintName>`. Text comes from `workspace/textDocumentContent`. |
@@ -151,7 +151,7 @@ weekly bump.
 ```
 
 Restores the tool and the fixture, builds `csx`, asserts readiness, then runs every case in
-`probes/cases.jsonl`. Exits non-zero on any mismatch. Nine cases today, including a negative one
+`probes/cases.jsonl`. Exits non-zero on any mismatch. Twelve cases today, including a negative one
 that pins a query fired before load to a loud failure rather than an empty result.
 
 `cases.jsonl` is one flat JSON object per line with four string fields so `run.sh` can parse it
