@@ -13,7 +13,7 @@ Two constraints drive the design:
 
 Status: **Milestone 1** — `csx ready` and `csx refs`, cross-project fixture, probe gate, both
 workflows. `def` / `diag` / `outline` / `impl` / `sym`, the source-generator and non-ASCII
-fixture cases, and daemon mode are Milestones 2–4.
+fixture cases, and daemon mode are Milestones 2–4. See [ROADMAP.md](ROADMAP.md).
 
 ## Use
 
