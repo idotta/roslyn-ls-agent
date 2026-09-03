@@ -92,11 +92,12 @@ Verified against nuget.org on 2026-09-02:
 *Settings → Actions → Allow GitHub Actions to create and approve pull requests* enabled on the
 repo. When the pin is already current the update is a no-op and no PR is opened.
 
-GitHub does not trigger workflows for a PR opened with `GITHUB_TOKEN`, so `probe.yml` will not
-run on the bump PR by itself. `bump.yml` therefore runs the probes before opening the PR and
-publishes the result as a `probes` commit status, which is what branch protection should
-require. Setting a `BUMP_TOKEN` secret (a PAT with `repo` scope) makes the PR trigger
-`probe.yml` natively as well.
+A PR opened with `GITHUB_TOKEN` does not get a working `probe.yml` run: GitHub creates the run
+with `github-actions[bot]` as the actor and parks it at `action_required`, waiting for a human
+to approve it, so it never executes. `bump.yml` therefore runs the probes itself before opening
+the PR and publishes the result as a `probes` commit status — that is the check to require in
+branch protection. Setting a `BUMP_TOKEN` secret (a PAT with `repo` scope) makes the PR run
+`probe.yml` for real as well.
 
 ## Dependencies
 
