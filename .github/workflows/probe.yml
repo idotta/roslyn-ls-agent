@@ -18,7 +18,7 @@ jobs:
 
       # The RID payload behind the tool is ~300 MB; the pin is the cache key so a bump
       # misses on purpose.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('.config/dotnet-tools.json', '**/*.csproj') }}

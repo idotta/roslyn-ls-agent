@@ -63,6 +63,8 @@ Measured on the fixture, Windows 11 / .NET 10.0.301, debug build:
 | `csx ready` | ~3.9–4.1 s |
 | `csx refs` | ~5.9–14.7 s |
 
+The same suite on `ubuntu-latest` reaches ready in ~12 s and runs six cases in ~39 s.
+
 Milestone 1 starts a dedicated server per invocation, so every command pays a full solution
 load. Milestone 3 switches to `--daemon-mode`, where the cost should be a pipe round-trip
 against an already-warm server; warm numbers get recorded here then.
