@@ -20,12 +20,22 @@ internal static class Output
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    public static void WriteLocations(
-        string root, IReadOnlyList<Location> locations, int max, int context, bool json)
+    /// <summary>
+    /// <paramref name="linesOf"/> resolves a URI to its source lines. Text is not read here
+    /// because a generated document has no file behind it — only the server can supply it —
+    /// and it is fetched lazily so a capped result set costs no requests for hits it drops.
+    /// </summary>
+    public static async Task WriteLocationsAsync(
+        string root,
+        IReadOnlyList<Location> locations,
+        int max,
+        int context,
+        bool json,
+        Func<string, Task<string[]>> linesOf)
     {
         var hits = locations
-            .Select(l => new Hit(PathUri.ToPath(l.Uri), l.Range))
-            .OrderBy(h => h.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(l => new Hit(l.Uri, PathUri.Display(root, l.Uri), l.Range))
+            .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
             .ThenBy(h => h.Range.Start.Line)
             .ThenBy(h => h.Range.Start.Character)
             .ToList();
@@ -34,15 +44,21 @@ internal static class Output
 
         if (json)
         {
-            var payload = shown.Select(h => new
+            var payload = new List<object>(shown.Count);
+            foreach (var hit in shown)
             {
-                path = PathUri.Relative(root, h.Path),
-                line = h.Range.Start.Line + 1,
-                column = h.Range.Start.Character + 1,
-                endLine = h.Range.End.Line + 1,
-                endColumn = h.Range.End.Character + 1,
-                text = LineAt(h.Path, h.Range.Start.Line)?.TrimEnd(),
-            });
+                payload.Add(new
+                {
+                    path = hit.Display,
+                    line = hit.Range.Start.Line + 1,
+                    column = hit.Range.Start.Character + 1,
+                    endLine = hit.Range.End.Line + 1,
+                    endColumn = hit.Range.End.Character + 1,
+                    generated = PathUri.IsGenerated(hit.Uri),
+                    text = At(await linesOf(hit.Uri), hit.Range.Start.Line)?.TrimEnd(),
+                });
+            }
+
             Console.WriteLine(JsonSerializer.Serialize(
                 new { count = hits.Count, truncated = hits.Count > shown.Count, results = payload },
                 JsonOut));
@@ -61,11 +77,10 @@ internal static class Output
             if (!first) Console.WriteLine();
             first = false;
 
-            var rel = PathUri.Relative(root, hit.Path);
             var line = hit.Range.Start.Line;
-            Console.WriteLine($"{rel}:{line + 1}:{hit.Range.Start.Character + 1}");
+            Console.WriteLine($"{hit.Display}:{line + 1}:{hit.Range.Start.Character + 1}");
 
-            var lines = Lines(hit.Path);
+            var lines = await linesOf(hit.Uri);
             var width = (line + 1 + context).ToString().Length;
             for (var i = Math.Max(0, line - context); i <= Math.Min(lines.Length - 1, line + context); i++)
             {
@@ -81,21 +96,8 @@ internal static class Output
         }
     }
 
-    private static readonly Dictionary<string, string[]> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static string? At(string[] lines, int zeroBased) =>
+        zeroBased >= 0 && zeroBased < lines.Length ? lines[zeroBased] : null;
 
-    private static string[] Lines(string path)
-    {
-        if (Cache.TryGetValue(path, out var cached)) return cached;
-        var lines = File.Exists(path) ? File.ReadAllLines(path) : [];
-        Cache[path] = lines;
-        return lines;
-    }
-
-    private static string? LineAt(string path, int zeroBased)
-    {
-        var lines = Lines(path);
-        return zeroBased >= 0 && zeroBased < lines.Length ? lines[zeroBased] : null;
-    }
-
-    private sealed record Hit(string Path, Range Range);
+    private sealed record Hit(string Uri, string Display, Range Range);
 }

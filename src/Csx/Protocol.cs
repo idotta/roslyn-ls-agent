@@ -44,6 +44,13 @@ internal sealed record ReferenceParams(
 
 internal sealed record WorkspaceSymbolParams(string Query);
 
+// LSP 3.18. The server implements this but never advertises a textDocumentContentProvider
+// in its initialize result, and answers regardless of whether the client declares the
+// matching capability — verified both ways against 5.12.0-1.26426.8.
+internal sealed record TextDocumentContentParams(string Uri);
+
+internal sealed record TextDocumentContentResult(string Text);
+
 internal sealed record SymbolInformation(
     string Name,
     int Kind,

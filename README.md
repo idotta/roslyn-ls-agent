@@ -121,6 +121,15 @@ Third-party alternatives are worse: `LspTypes` is LSP 3.16 and last shipped Janu
 
 Only the payload shapes are hand-defined. Framing and correlation still come from StreamJsonRpc.
 
+`fixture/Gen` references **Microsoft.CodeAnalysis.CSharp** (Microsoft, MIT) because a source
+generator cannot be written without it. It is fixture-only and never loaded by `csx`, so the
+query path stays free of C#-specific third-party code. The version is pinned **low** (4.3.0,
+well past `IIncrementalGenerator`'s introduction) and deliberately never tracks the server:
+the analyzer is loaded by two independently-moving compilers — the SDK's `csc` during
+`dotnet build` and the language server's hosted Roslyn — and Roslyn only ever moves forward,
+so a low pin is permanently compatible while a tracking pin would need re-verifying on every
+weekly bump.
+
 ## Failure modes this handles
 
 | Failure mode | How |
@@ -128,8 +137,10 @@ Only the payload shapes are hand-defined. Framing and correlation still come fro
 | Async project load returning empty instead of erroring | `WaitReadyAsync` waits for `workspace/projectInitializationComplete`, then polls a sentinel symbol until it resolves, then fails loudly on timeout. Never `sleep`. |
 | A sentinel that is itself the thing being queried | The sentinel is inferred from a type declaration in the tree, so "symbol absent" and "workspace not loaded" stay distinguishable. The target gets a 10 s grace poll after readiness. |
 | UTF-16 position encoding | The server does not advertise `positionEncoding`, which per LSP 3.17 means utf-16 — the same unit as a .NET string index. `csx` asserts this at `initialize` and refuses to run if a future build negotiates utf-8. |
-| Roslyn ignoring unopened documents | Every query opens its document via `textDocument/didOpen` first. |
+| Roslyn ignoring unopened documents | Every query opens its document via `textDocument/didOpen` first — except source-generated ones, which the server owns and answers for without it. |
 | No auto-restore | `probes/run.sh` runs `dotnet restore` on the fixture before starting the server. |
+| Source-generated symbols rendering as a nonexistent path | Generated documents come back under a `roslyn-source-generated:` URI. `new Uri(u).LocalPath` does not throw for one, it returns `/BuildInfo.g.cs`, so `PathUri.Display` branches on the scheme and labels them `<generated>/<assembly>/<hintName>`. Text comes from `workspace/textDocumentContent`. |
+| An unbuilt source generator contributing nothing, silently | With the analyzer assembly absent the workspace still loads and the sentinel still resolves; only the generated symbol is missing, with no error or diagnostic anywhere. `probes/run.sh` builds `fixture/Gen` before starting the server, and three cases assert the generated symbol resolves. |
 | Server-to-client requests faulting the connection | `LspClient.Endpoints` answers `workspace/configuration`, `client/registerCapability`, `window/workDoneProgress/create` and friends. |
 | A renamed server flag failing silently | The thin client forwards unrecognised options straight through to the server, so a rename produces no error. Flags live only in `src/Csx/ServerArgs.cs`, and the probes are the only guard. |
 
@@ -140,11 +151,12 @@ Only the payload shapes are hand-defined. Framing and correlation still come fro
 ```
 
 Restores the tool and the fixture, builds `csx`, asserts readiness, then runs every case in
-`probes/cases.jsonl`. Exits non-zero on any mismatch. Six cases today, including a negative one
+`probes/cases.jsonl`. Exits non-zero on any mismatch. Nine cases today, including a negative one
 that pins a query fired before load to a loud failure rather than an empty result.
 
 `cases.jsonl` is one flat JSON object per line with four string fields so `run.sh` can parse it
-with `sed` alone — no `jq`, no Python, so it runs unchanged on a GitHub runner and in Git Bash.
+with `sed` alone — no `jq`, which is absent from Git Bash on the dev machine. That keeps it
+running unchanged on a GitHub runner and in Git Bash.
 Inside `expect`, `'` stands for `"` and `|` separates substrings that must all appear.
 
 ## Layout
@@ -157,6 +169,7 @@ src/Csx/                    the thin LSP client and CLI
   Protocol.cs               hand-defined LSP payload types
   LspClient.cs              transport, initialize, readiness, didOpen
   Output.cs                 path:line + context formatting
-fixture/                    deliberately tricky solution (cross-project reference)
+fixture/                    deliberately tricky solution
+  Gen/                      incremental source generator; its output is referenced from App
 probes/                     cases.jsonl + run.sh
 ```

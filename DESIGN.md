@@ -25,6 +25,18 @@ near-useless to a model.
 - `--json` for the probe harness to assert against.
 - Every new command follows these. They are the reason this is a CLI and not a wrapper.
 
+Source-generated locations are labelled `<generated>/<assemblyName>/<hintName>`, built only
+from the URI fields that are stable across runs and machines. **Known limitation:** none of
+those fields identifies the *consuming* project, so one generator applied to several projects
+— an analyzer in `Directory.Build.props`, the common real-world shape — produces several
+distinct documents that all render identically, and `Output` sorts and renders by that label.
+A references response carries only a URI and a range, so there is nothing in it to
+disambiguate with. The available disambiguator is `containerName` (`"in BuildInfo (project
+Core (net10.0))"`), which arrives on `workspace/symbol` results and is already parsed by
+`Program.Matches` — but it is absent from the reference locations themselves, so wiring it
+through means carrying the resolved symbol's project alongside the URI. Deferred until a
+fixture has two projects consuming one generator; the fixture today has one.
+
 ## Settled — do not re-litigate
 
 | Decision | Why |

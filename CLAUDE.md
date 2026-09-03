@@ -32,13 +32,72 @@ dotnet build src/Csx/Csx.csproj          # build
   a workspace that has not loaded, and the caller waits out the whole timeout for a typo.
 - **A query fired before load returns empty, not an error.** Never `sleep`; wait for
   `workspace/projectInitializationComplete` and then poll a sentinel that must resolve.
-- **Roslyn will not answer for documents it does not consider open** — `didOpen` first.
+- **Roslyn will not answer for documents it does not consider open** — `didOpen` first. The
+  exception is a source-generated document: the server owns it, answers without a `didOpen`,
+  and there is no file to read the text from. `OpenAsync` skips them.
+- **Source-generated locations arrive under `roslyn-source-generated:`, and every path
+  helper lies about them.** `new Uri(u).LocalPath` does not throw — it returns
+  `/BuildInfo.g.cs`, which then renders as a confident wrong answer with no context lines and
+  exit 0. Route every location through `PathUri.Display`. The authority guid, the
+  `documentId` and `assemblyPath` in that URI all change between runs and machines, so
+  **never assert on the raw URI** — only `hintName`, `assemblyName`, `assemblyVersion` and
+  `typeName` are stable. Text comes from `workspace/textDocumentContent`, which the server
+  implements without advertising a `textDocumentContentProvider` and answers whether or not
+  the client declares the matching capability (verified both ways). The older
+  `sourceGeneratedDocument/_roslyn_getText` no longer exists.
+- **An unbuilt source generator produces nothing, silently.** With `fixture/Gen/bin` absent
+  the workspace still loads, the sentinel still resolves, and only the generated symbol is
+  missing — no error, no diagnostic, no CS9057 on the wire. `run.sh` builds `fixture/Gen`
+  with `-c Debug` pinned, because the design-time build resolves the analyzer from
+  `Gen/bin/Debug`; building it Release leaves that path stale.
+- **A malformed request payload takes the server's whole queue down.** Sending
+  `workspace/textDocumentContent` with `{textDocument:{uri}}` instead of `{uri}` returned
+  `TaskCanceled`, and every later request then failed with `-32000: Server was requested to
+  shut down`. Payloads are hand-rolled in `Protocol.cs`, so a shape mistake is silent and
+  then fatal rather than a clean error.
 - **The server does not restore your projects.** `dotnet restore` before starting it.
+
+## C# and .NET rules
+
+This repo is .NET 10 / C# 14: a CLI and a thin LSP client, no UI, no web host, no DI container.
+
+- **`dotnet format` must pass clean.** `dotnet format --verify-no-changes` exits 0 today; keep it
+  that way and run `dotnet format` before calling a change done. There is deliberately **no
+  `.editorconfig` yet**, so `dotnet format` enforces its own defaults rather than house style —
+  match the surrounding code instead of reformatting a file you touched.
+- **`DateTime.UtcNow`, never `DateTime.Now`.** Every deadline in `LspClient` is UTC.
+- **No `async void`** outside an event handler, and never `.Result` or `.Wait()` — `csx` is async
+  from `Main` down, and a sync-over-async wait here deadlocks against the JSON-RPC read loop.
+- **Reach for C# 14 first:** `extension` blocks rather than `this` extension methods, the `field`
+  keyword rather than a hand-written backing field, `x?.P = v` rather than an `if` guard. C# 14
+  comes free with `net10.0` and `LangVersion` is deliberately unset. `fixture/Gen` is the one
+  exception: analyzers must target netstandard2.0, whose default is C# 7.3, so it pins
+  `<LangVersion>latest</LangVersion>` explicitly.
+- **`[LibraryImport]`, not `[DllImport]`**, if native interop ever appears.
+- **Fix root causes and delete what is dead.** Don't preserve a shape for backwards
+  compatibility — nothing depends on `csx`'s internals yet. Simplify rather than layering.
+- **Never push to a remote, and never commit unless asked.** `bump.yml` is the only thing that
+  opens PRs here.
+
+Three deliberate departures from what general .NET guidance would tell you. They are decisions,
+not oversights — do not "modernise" them:
+
+- **Expected failures are exceptions, not a `Result`/`ErrorOr` type.** `CsxException` carries
+  unknown symbol, bad flag and timeout; `Main` catches it, prints one line, returns exit 1. That
+  *is* a CLI's error contract, and threading a result type through to the same two lines of
+  `Main` would buy nothing.
+- **No Generic Host, no DI, no options binding.** A one-shot process with a single dependency
+  does not need a composition root.
+- **No xUnit.** `probes/run.sh` is the whole test suite on purpose: it asserts against a real
+  server, which is the only place the failure modes this project exists to catch actually occur.
+  A unit test with a mocked server would pass while every one of them was broken.
 
 ## Conventions
 
-- `probes/run.sh` parses `cases.jsonl` with `sed` alone. **No `jq`, no Python** — neither exists
-  in Git Bash on the dev machine. Keep `cases.jsonl` to four flat string fields.
+- `probes/run.sh` parses `cases.jsonl` with `sed` alone. **No `jq`** — it does not exist in Git
+  Bash on the dev machine. (`python` does, 3.14.6, despite what this file used to claim; the
+  `sed`-only rule still stands for the GitHub runner.) Keep `cases.jsonl` to four flat string
+  fields.
 - `probes/run.sh` must stay mode `100755` in the index. Windows Git has `core.filemode=false`, so
   `chmod +x` does not register; use `git update-index --chmod=+x` if it ever reverts.
 - Adding a NuGet package for LSP types is a regression, not a cleanup. See the README.

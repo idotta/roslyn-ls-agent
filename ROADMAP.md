@@ -3,14 +3,14 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-03, after Milestone 1.
+Last updated: 2026-09-03, after the Milestone 2 source-generator fixture.
 
 ## Status
 
 | Milestone | Scope | State |
 |---|---|---|
 | 1 | `ready` + `refs`, cross-project fixture, probe gate, both workflows | **done** |
-| 2 | The hard fixture cases and the read commands | not started |
+| 2 | The hard fixture cases and the read commands | in progress |
 | 3 | Daemon mode, then `skill/SKILL.md` | not started |
 | 4 | Remaining commands and output tuning | not started |
 
@@ -27,15 +27,26 @@ file passes while everything real is broken. Add the fixture cases first, then t
 
 Fixture:
 
-- [ ] A **source generator** producing a symbol that gets referenced from another project.
-      `--sourceGeneratorExecutionPreference <Automatic|Balanced>` exists on the server and
-      defaults to `Automatic`; `workspace/_roslyn_refreshSourceGenerators` also exists if
-      generated symbols turn out to go stale.
+- [x] A **source generator** producing a symbol that gets referenced from another project.
+      `fixture/Gen` emits `Fixture.Core.Generated.BuildInfo.Stamp()` into Core via
+      `RegisterSourceOutput` keyed on a syntax provider that looks for `Greeter`, so the
+      generated symbol genuinely depends on the compilation — rename `Greeter` and the
+      generated namespace disappears (CS0234). Deliberately *not*
+      `RegisterPostInitializationOutput`: that emits before any compilation analysis and can
+      never go stale, so a fixture built on it would pass without testing the path that can.
+      `--sourceGeneratorExecutionPreference` was not needed at the default `Automatic`, and
+      `workspace/_roslyn_refreshSourceGenerators` now has a stub handler. **Still untested:**
+      staleness itself. No case edits a file mid-session, so nothing yet proves a stale
+      generated symbol gets refreshed rather than served from cache — that needs either a
+      long-lived daemon (Milestone 3) or a case that mutates the fixture and re-queries.
 - [ ] A file with **non-ASCII characters** on a line containing a symbol. Use an **astral-plane
       character (an emoji)**, not just an accented letter: positions are UTF-16 code units, which
       .NET string indices already are, so an accent passes even on a broken implementation. Only
       a surrogate pair catches code that counts runes or UTF-8 bytes.
-- [ ] One **deliberate type error** for `csx diag`.
+- [ ] One **deliberate type error** for `csx diag`. It must live in **App**, or a new
+      project — never in Core. `probes/run.sh` compiles Core to arm its `CS9057` guard (the
+      analyzer-vs-compiler version mismatch that otherwise degrades to a silently absent
+      generated symbol), so an uncompilable Core would disarm that guard permanently.
 
 Commands:
 
@@ -45,14 +56,22 @@ Commands:
       `workspace/diagnostic` but does **not** advertise `diagnosticProvider` in its initialize
       result — it registers dynamically via `client/registerCapability`, which
       `LspClient.Endpoints` currently accepts and discards. Either record the registration or
-      call the endpoint optimistically.
+      call the endpoint optimistically. The registration payload is in hand: identifiers
+      `DocumentCompilerSemantic`, `DocumentAnalyzerSemantic`, `DocumentAnalyzerSyntax` and
+      `NonLocal`, all `workspaceDiagnostics: false`. Calling optimistically is the cheaper
+      route, and `workspace/textDocumentContent` proved the server answers unadvertised
+      endpoints anyway.
 - [ ] `csx outline <file>` via `textDocument/documentSymbol`.
 
 Also: the first document opened only reports errors that need no loaded project (a missing
 semicolon, say). Re-pull after load settles rather than trusting the first response, and add a
 probe case pinning that.
 
-- [ ] Expand `cases.jsonl` to cover all of the above.
+- [ ] Expand `cases.jsonl` to cover the two remaining fixture cases. The generator has three:
+      `source-generated-refs-symbol`, `-position` and `-json`. The symbol and position forms are
+      kept separate on purpose — `LocateAsync`'s position branch never touches the server, so a
+      single case would pass with `workspace/symbol` coverage of generated symbols entirely
+      broken.
 
 ## Milestone 3 — daemon and skill
 
@@ -82,7 +101,7 @@ agent to run `csx ready` once at session start.
 - [x] `.config/dotnet-tools.json` pins `roslyn-language-server`; `dotnet tool restore` reproduces it
 - [x] Zero non-Microsoft C#-specific dependencies in the query path
 - [x] `csx refs` on a cross-project symbol returns correct `file:line` plus context
-- [ ] `csx refs` on a source-generated symbol resolves
+- [x] `csx refs` on a source-generated symbol resolves
 - [ ] Column positions correct on the non-ASCII fixture line
 - [ ] `csx diag` finds the deliberate error and does *not* report it before load completes
 - [x] Probe suite fails loudly when the server returns empty due to premature querying
@@ -107,3 +126,10 @@ against nuget.org and the shipped binary on 2026-09-02/03.
 - `workspace/projectInitializationComplete` is a real server→client notification and is the
   readiness signal.
 - Roslyn's `containerName` is localised display text, not a namespace path.
+- Source-generated documents use the `roslyn-source-generated:` scheme. `workspace/symbol`,
+  `textDocument/definition`, `textDocument/references` and `textDocument/documentSymbol` all
+  cover them. `workspace/textDocumentContent` (LSP 3.18) returns the text and needs no declared
+  client capability; `sourceGeneratedDocument/_roslyn_getText` is gone. The URI's authority guid
+  and `documentId` are regenerated on every workspace load.
+- `DOTNET_CLI_UI_LANGUAGE=en` pins Roslyn's own display strings, but StreamJsonRpc's error text
+  still came back localised (Portuguese on this machine). Do not assert on transport error text.

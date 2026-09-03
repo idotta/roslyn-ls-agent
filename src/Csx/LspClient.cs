@@ -12,6 +12,7 @@ internal sealed class LspClient : IAsyncDisposable
     private readonly Endpoints _endpoints;
     private readonly StringBuilder _stderr;
     private readonly HashSet<string> _open = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string[]> _lines = new(StringComparer.OrdinalIgnoreCase);
 
     public string Root { get; }
 
@@ -120,25 +121,58 @@ internal sealed class LspClient : IAsyncDisposable
         return result ?? [];
     }
 
-    public async Task<IReadOnlyList<Location>> ReferencesAsync(string path, Position position, CancellationToken ct)
+    public async Task<IReadOnlyList<Location>> ReferencesAsync(string uri, Position position, CancellationToken ct)
     {
-        await OpenAsync(path, ct);
+        await OpenAsync(uri, ct);
         var result = await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
             "textDocument/references",
-            new ReferenceParams(
-                new TextDocumentIdentifier(PathUri.FromPath(path)), position, new ReferenceContext(true)),
+            new ReferenceParams(new TextDocumentIdentifier(uri), position, new ReferenceContext(true)),
             ct);
         return result ?? [];
     }
 
-    /// <summary>Roslyn will not answer requests for a document it does not consider open.</summary>
-    public async Task OpenAsync(string path, CancellationToken ct)
+    /// <summary>
+    /// Roslyn will not answer requests for a document it does not consider open. Generated
+    /// documents are the exception: they are the server's own, it answers for them without a
+    /// didOpen, and there is no file to read the text from anyway.
+    /// </summary>
+    public async Task OpenAsync(string uri, CancellationToken ct)
     {
-        if (!_open.Add(path)) return;
-        var text = await File.ReadAllTextAsync(path, ct);
+        if (PathUri.IsGenerated(uri) || !_open.Add(uri)) return;
+        var text = await File.ReadAllTextAsync(PathUri.ToPath(uri), ct);
         await _rpc.NotifyWithParameterObjectAsync(
             "textDocument/didOpen",
-            new DidOpenTextDocumentParams(new TextDocumentItem(PathUri.FromPath(path), "csharp", 1, text)));
+            new DidOpenTextDocumentParams(new TextDocumentItem(uri, "csharp", 1, text)));
+    }
+
+    /// <summary>
+    /// Document text for rendering context lines: off disk for a real file, from the server
+    /// for a generated one. An unreadable document yields no lines rather than failing —
+    /// a hit with a correct position is still worth printing.
+    /// </summary>
+    public async Task<string[]> LinesAsync(string uri, CancellationToken ct)
+    {
+        if (_lines.TryGetValue(uri, out var cached)) return cached;
+
+        string[] lines;
+        if (PathUri.IsGenerated(uri))
+        {
+            var content = await _rpc.InvokeWithParameterObjectAsync<TextDocumentContentResult?>(
+                "workspace/textDocumentContent", new TextDocumentContentParams(uri), ct);
+            // Trailing newline dropped so a generated document splits the way
+            // File.ReadAllLines would, instead of printing a phantom blank context row.
+            var text = content?.Text.ReplaceLineEndings("\n");
+            if (text is not null && text.EndsWith('\n')) text = text[..^1];
+            lines = text is null ? [] : text.Split('\n');
+        }
+        else
+        {
+            var path = PathUri.ToPath(uri);
+            lines = File.Exists(path) ? await File.ReadAllLinesAsync(path, ct) : [];
+        }
+
+        _lines[uri] = lines;
+        return lines;
     }
 
     public string StderrTail(int lines = 12)
@@ -201,6 +235,16 @@ internal sealed class LspClient : IAsyncDisposable
 
         [JsonRpcMethod("workspace/_roslyn_restorableProjects", UseSingleObjectParameterDeserialization = true)]
         public string[] OnRestorableProjects(JsonElement _) => [];
+
+        // Refresh requests for source-generated documents. csx is one-shot, so there is
+        // nothing to invalidate — but answering beats the alternative: an error response on
+        // an unexpected server-to-client call, and a bad payload is already known to take the
+        // server's whole request queue down with it.
+        [JsonRpcMethod("workspace/_roslyn_refreshSourceGenerators", UseSingleObjectParameterDeserialization = true)]
+        public object? OnRefreshSourceGenerators(JsonElement _) => null;
+
+        [JsonRpcMethod("workspace/textDocumentContent/refresh", UseSingleObjectParameterDeserialization = true)]
+        public object? OnTextDocumentContentRefresh(JsonElement _) => null;
 
         [JsonRpcMethod("window/logMessage", UseSingleObjectParameterDeserialization = true)]
         public void OnLogMessage(JsonElement _) { }

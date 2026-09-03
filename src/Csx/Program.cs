@@ -73,20 +73,25 @@ internal static partial class Program
         // has not finished loading, and the caller waits out the whole timeout for it.
         await client.WaitReadyAsync(opts.Sentinel ?? InferSentinel(opts.Root), opts.Timeout, ct);
 
-        var (path, position) = await LocateAsync(client, opts.Root, target, ct);
-        var locations = await client.ReferencesAsync(path, position, ct);
-        Output.WriteLocations(opts.Root, locations, opts.Max, opts.Context, opts.Json);
+        var (uri, position) = await LocateAsync(client, opts.Root, target, ct);
+        var locations = await client.ReferencesAsync(uri, position, ct);
+        await Output.WriteLocationsAsync(
+            opts.Root, locations, opts.Max, opts.Context, opts.Json, u => client.LinesAsync(u, ct));
         return locations.Count == 0 ? 1 : 0;
     }
 
-    private static async Task<(string Path, Position Position)> LocateAsync(
+    /// <summary>
+    /// Returns a URI, not a path: a source-generated declaration has no path, and converting
+    /// one to a path and back silently yields a different, nonexistent document.
+    /// </summary>
+    private static async Task<(string Uri, Position Position)> LocateAsync(
         LspClient client, string root, string target, CancellationToken ct)
     {
         if (TryParsePosition(target, out var file, out var line, out var column))
         {
             var full = Path.GetFullPath(Path.Combine(root, file));
             if (!File.Exists(full)) throw new CsxException($"no such file: {file}");
-            return (full, new Position(line - 1, column - 1));
+            return (PathUri.FromPath(full), new Position(line - 1, column - 1));
         }
 
         // The sentinel proves the workspace loaded, not that every project did. Give the
@@ -117,12 +122,12 @@ internal static partial class Program
         if (matches.Count > 1)
         {
             var listing = string.Join('\n', matches.Select(m =>
-                $"  {FullName(m)}  {PathUri.Relative(root, PathUri.ToPath(m.Location.Uri))}:{m.Location.Range.Start.Line + 1}"));
+                $"  {FullName(m)}  {PathUri.Display(root, m.Location.Uri)}:{m.Location.Range.Start.Line + 1}"));
             throw new CsxException($"'{target}' is ambiguous; qualify it further:\n{listing}");
         }
 
         var match = matches[0];
-        return (PathUri.ToPath(match.Location.Uri), match.Location.Range.Start);
+        return (match.Location.Uri, match.Location.Range.Start);
     }
 
     /// <summary>
@@ -177,11 +182,16 @@ internal static partial class Program
 
     /// <summary>
     /// Picks a symbol that must resolve once the workspace is loaded. Any real type in the
-    /// tree will do; the point is only that an empty answer means "not loaded yet".
+    /// tree will do; the point is only that an empty answer means "not loaded yet". Sorted
+    /// because <see cref="Directory.EnumerateFiles(string, string, SearchOption)"/> order is
+    /// filesystem-defined, and readiness must not depend on which file it happens to hit —
+    /// adding a project to a workspace would otherwise silently change the sentinel.
     /// </summary>
     private static string InferSentinel(string root)
     {
-        foreach (var file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
+        foreach (var file in Directory
+                     .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+                     .Order(StringComparer.OrdinalIgnoreCase))
         {
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") ||
                 file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
