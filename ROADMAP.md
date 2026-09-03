@@ -1,7 +1,7 @@
 # Roadmap
 
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
-questions are already settled so they don't get re-litigated.
+questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
 Last updated: 2026-09-03, after Milestone 1.
 
@@ -89,24 +89,6 @@ agent to run `csx ready` once at session start.
 - [x] `bump.yml` opens a PR that is gated (see the `probes` commit status caveat in the README)
 - [ ] Two concurrent clients work; daemon survives killing client 1's process tree
 - [ ] Warm command latency measured and recorded in the README
-
-## Settled — do not re-litigate
-
-Decisions, with the reason, so a later session doesn't spend the day rediscovering them.
-
-| Decision | Why |
-|---|---|
-| Server is `roslyn-language-server` | Microsoft-published, MIT, same engine as the VS Code C# extension |
-| We write our own thin LSP client | A client is needed for the probes regardless; two clients would disagree about readiness |
-| Agent surface is a CLI, not an MCP server | MCP tool schemas cost context on every request; a CLI costs one paragraph in `SKILL.md`, and we control the output shape |
-| Updates via cron GitHub Action | Renovate's `ignoreUnstable` default would silently never bump this train; Dependabot has a history of mangling `dotnet-tools.json`. Beatable, but not worth the fight for one dependency |
-| Version pinned in `.config/dotnet-tools.json` | Reproducible, in source control, bumpable by CI |
-| LSP payload types are hand-defined | No maintained Microsoft package supplies them — see the README's Dependencies section. Adding a package back is a regression, not a cleanup |
-| No off-the-shelf MCP↔LSP bridge | Third-party code in the hot path, and language-agnostic bridges know nothing about Roslyn's specific failure modes |
-
-If `--autoLoadProjects` turns out to be insufficient for some repo shape, investigate the
-non-standard `solution/open` notification (it exists in the server) rather than pulling in a
-third-party wrapper.
 
 ## Verified facts, and when
 

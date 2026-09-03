@@ -3,9 +3,9 @@
 A CLI (`csx`) that gives coding agents semantic C# queries over Microsoft's official
 `roslyn-language-server`, with a cron-driven update loop gated by a probe suite.
 
-**Read `ROADMAP.md` first.** It holds the milestone state, the acceptance criteria, and the
-decisions that are already settled. The README holds the user-facing detail and the evidence
-behind the dependency choices.
+**Read `ROADMAP.md` first** for milestone state and acceptance criteria, and `DESIGN.md` for the
+output rules every command follows and the decisions that are already settled. The README holds
+the user-facing detail and the evidence behind the dependency choices.
 
 ## Commands
 
