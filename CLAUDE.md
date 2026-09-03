@@ -79,25 +79,11 @@ This repo is .NET 10 / C# 14: a CLI and a thin LSP client, no UI, no web host, n
 - **Never push to a remote, and never commit unless asked.** `bump.yml` is the only thing that
   opens PRs here.
 
-Three deliberate departures from what general .NET guidance would tell you. They are decisions,
-not oversights — do not "modernise" them:
-
-- **Expected failures are exceptions, not a `Result`/`ErrorOr` type.** `CsxException` carries
-  unknown symbol, bad flag and timeout; `Main` catches it, prints one line, returns exit 1. That
-  *is* a CLI's error contract, and threading a result type through to the same two lines of
-  `Main` would buy nothing.
-- **No Generic Host, no DI, no options binding.** A one-shot process with a single dependency
-  does not need a composition root.
-- **No xUnit.** `probes/run.sh` is the whole test suite on purpose: it asserts against a real
-  server, which is the only place the failure modes this project exists to catch actually occur.
-  A unit test with a mocked server would pass while every one of them was broken.
-
 ## Conventions
 
 - `probes/run.sh` parses `cases.jsonl` with `sed` alone. **No `jq`** — it does not exist in Git
   Bash on the dev machine. (`python` does, 3.14.6, despite what this file used to claim; the
-  `sed`-only rule still stands for the GitHub runner.) Keep `cases.jsonl` to four flat string
-  fields.
+  `sed`-only rule still stands for the GitHub runner.) Keep `cases.jsonl` to four flat string fields.
 - `probes/run.sh` must stay mode `100755` in the index. Windows Git has `core.filemode=false`, so
   `chmod +x` does not register; use `git update-index --chmod=+x` if it ever reverts.
 - Adding a NuGet package for LSP types is a regression, not a cleanup. See the README.
