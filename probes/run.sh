@@ -20,7 +20,20 @@ dotnet tool restore || exit 1
 # The language server does not restore your projects. Skip this and anything needing
 # resolved references comes back empty rather than erroring -- a silent false pass.
 log "dotnet restore (fixture)"
-dotnet restore fixture/Fixture.sln --nologo -v q || exit 1
+dotnet restore fixture/Fixture.slnx --nologo -v q || exit 1
+
+# The analyzer has to exist as a built assembly before the server loads Core, or the
+# generator contributes nothing -- no error, no diagnostic, the generated symbol simply
+# is not there. Debug is pinned because the design-time build resolves the analyzer from
+# Gen/bin/Debug; building it Release would leave that path stale or empty.
+#
+# Core, not Gen: the analyzer ProjectReference makes this build Gen first anyway, and
+# compiling Core is what arms its <WarningsAsErrors>CS9057</WarningsAsErrors> -- the guard
+# against the analyzer being built against a newer compiler than the one loading it, which
+# otherwise degrades to the same silent nothing. Never the solution: the deliberate type
+# error for `csx diag` is deliberately kept out of Core so this step stays green.
+log "build fixture generator + Core"
+dotnet build fixture/Core/Core.csproj -c Debug --nologo -v q || exit 1
 
 log "build csx"
 dotnet build src/Csx/Csx.csproj -c Release --nologo -v q || exit 1
