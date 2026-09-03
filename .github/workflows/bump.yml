@@ -1,0 +1,45 @@
+name: bump-roslyn-ls
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - run: dotnet tool restore
+
+      # No stable release exists, so --prerelease is load-bearing. Exits 0 when already
+      # current, which makes a quiet week a no-op rather than a red build.
+      - run: dotnet tool update roslyn-language-server --prerelease
+
+      - id: pin
+        run: |
+          version=$(sed -n 's/.*"version": "\(5\.[^"]*\)".*/\1/p' .config/dotnet-tools.json | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: ./probes/run.sh
+
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          title: "bump roslyn-language-server to ${{ steps.pin.outputs.version }}"
+          branch: chore/bump-roslyn-ls
+          commit-message: "bump roslyn-language-server to ${{ steps.pin.outputs.version }}"
+          add-paths: .config/dotnet-tools.json
+          body: |
+            Automated weekly bump of the pinned language server.
+
+            `probes/run.sh` passed against `${{ steps.pin.outputs.version }}` on this runner
+            before the PR was opened; `probe.yml` re-runs it on the PR.

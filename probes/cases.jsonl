@@ -1,0 +1,6 @@
+{"name":"cross-project-refs","args":"refs Fixture.Core.Greeter.Greet --root fixture","exit":"0","expect":"Core/Greeter.cs:5|App/Program.cs:9"}
+{"name":"cross-project-refs-json","args":"refs Fixture.Core.Greeter.Greet --root fixture --json","exit":"0","expect":"'count': 2|'path': 'App/Program.cs'|'line': 9|'column': 35"}
+{"name":"unqualified-refs","args":"refs Greet --root fixture","exit":"0","expect":"Core/Greeter.cs:5|App/Program.cs:9"}
+{"name":"context-lines-rendered","args":"refs Greet --root fixture --context 1","exit":"0","expect":"Console.WriteLine(Greeter.Greet(|public static string Greet(string name)"}
+{"name":"premature-query-fails-loudly","args":"refs Fixture.Core.Greeter.Greet --root fixture --timeout 0","exit":"1","expect":"did not become ready|returned no symbols"}
+{"name":"unknown-symbol-fails","args":"refs Fixture.Core.Greeter.NoSuchMethod --root fixture","exit":"1","expect":"no symbol matched"}

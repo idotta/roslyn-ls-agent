@@ -1,0 +1,8 @@
+bin/
+obj/
+artifacts/
+*.user
+.probe-logs/
+
+# Local Claude Code session state, not part of the project.
+.remember/

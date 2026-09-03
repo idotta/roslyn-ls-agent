@@ -1,0 +1,27 @@
+name: probe
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # The RID payload behind the tool is ~300 MB; the pin is the cache key so a bump
+      # misses on purpose.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('.config/dotnet-tools.json', '**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - run: ./probes/run.sh

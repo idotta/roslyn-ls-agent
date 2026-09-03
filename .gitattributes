@@ -1,0 +1,4 @@
+* text=auto
+
+# Git Bash refuses a CRLF shebang.
+*.sh text eol=lf
