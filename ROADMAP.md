@@ -3,7 +3,7 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-03, after the Milestone 2 non-ASCII fixture.
+Last updated: 2026-09-03, after `csx diag` and the deliberate-error fixture.
 
 ## Status
 
@@ -52,32 +52,39 @@ Fixture:
       case catches a rune-counting error (column 38 lands on the `.` and resolves `Party`, so
       the case fails) but not a UTF-8 one (41 is still inside `Cheer`); the `'column': 39`
       assertion in the JSON case is what covers that direction.
-- [ ] One **deliberate type error** for `csx diag`. It must live in **App**, or a new
+- [x] One **deliberate type error** for `csx diag`. It must live in **App**, or a new
       project — never in Core. `probes/run.sh` compiles Core to arm its `CS9057` guard (the
       analyzer-vs-compiler version mismatch that otherwise degrades to a silently absent
       generated symbol), so an uncompilable Core would disarm that guard permanently.
+      `fixture/App/TypeError.cs` holds a **cross-project** CS0029 (`int Wrong() =>
+      Greeter.Farewell("x")`, a member Core exposes only for it, so the refs cases keep their
+      pinned reference counts) rather than a self-contained one: binding it needs Core's reference
+      resolved, so the misc-files state a freshly opened document is first bound against
+      cannot report it. That is what makes the re-pull-after-load requirement testable —
+      a first-response-only `diag` returns nothing and the case fails. Nothing builds App,
+      so an uncompilable App costs the gate nothing.
 
 Commands:
 
 - [ ] `csx def <file>:<line>:<col>` — also accepts `Namespace.Type.Member`. Symbol resolution and
       the position parser already exist in `Program.LocateAsync`.
-- [ ] `csx diag [path] [--errors-only]`. The server implements `textDocument/diagnostic` and
-      `workspace/diagnostic` but does **not** advertise `diagnosticProvider` in its initialize
-      result — it registers dynamically via `client/registerCapability`, which
-      `LspClient.Endpoints` currently accepts and discards. Either record the registration or
-      call the endpoint optimistically. The registration payload is in hand: identifiers
-      `DocumentCompilerSemantic`, `DocumentAnalyzerSemantic`, `DocumentAnalyzerSyntax` and
-      `NonLocal`, all `workspaceDiagnostics: false`. Calling optimistically is the cheaper
-      route, and `workspace/textDocumentContent` proved the server answers unadvertised
-      endpoints anyway.
+- [x] `csx diag [path] [--errors-only]`. Calls `textDocument/diagnostic` optimistically; the
+      dynamic `client/registerCapability` is still accepted and discarded. `workspace/diagnostic`
+      was tried and dropped: the server answers it but returns **zero reports**, matching the
+      `workspaceDiagnostics: false` in that registration, and the call is specified as a long
+      poll, so attempting it only bought a timeout. With no argument, `diag` walks the `.cs`
+      files under `--root` instead (`Program.SourceFiles`, shared with the sentinel inference).
+      Exit code is 0 whenever the query was answered — a clean file is a successful `diag`.
 - [ ] `csx outline <file>` via `textDocument/documentSymbol`.
 
-Also: the first document opened only reports errors that need no loaded project (a missing
-semicolon, say). Re-pull after load settles rather than trusting the first response, and add a
-probe case pinning that.
+Done: the first document opened only reports errors that need no loaded project (a missing
+semicolon, say), and waiting on readiness does not help because the document is opened after it.
+`LspClient.DiagnosticsAsync` re-pulls until two consecutive reports agree, with a 5 s budget;
+`deliberate-error-diag` is the case that pins it, via the cross-project error above.
 
-- [ ] Expand `cases.jsonl` to cover the remaining fixture case (the deliberate type error). The
-      generator and the non-ASCII line have three each: `-symbol`, `-position` and `-json`. The
+- [x] Expand `cases.jsonl` to cover the remaining fixture case (the deliberate type error).
+      `deliberate-error-diag`, `-diag-json` and `-diag-workspace`; the last one covers the
+      no-argument file walk, which no path-taking case would reach. The
       symbol and position forms are kept separate on purpose — `LocateAsync`'s position branch
       never touches the server, so a single case would pass with `workspace/symbol` coverage of
       generated symbols entirely broken.
@@ -112,7 +119,7 @@ agent to run `csx ready` once at session start.
 - [x] `csx refs` on a cross-project symbol returns correct `file:line` plus context
 - [x] `csx refs` on a source-generated symbol resolves
 - [x] Column positions correct on the non-ASCII fixture line
-- [ ] `csx diag` finds the deliberate error and does *not* report it before load completes
+- [x] `csx diag` finds the deliberate error and does *not* report it before load completes
 - [x] Probe suite fails loudly when the server returns empty due to premature querying
 - [x] `bump.yml` opens a PR that is gated (see the `probes` commit status caveat in the README)
 - [ ] Two concurrent clients work; daemon survives killing client 1's process tree
@@ -135,6 +142,10 @@ against nuget.org and the shipped binary on 2026-09-02/03.
 - `workspace/projectInitializationComplete` is a real server→client notification and is the
   readiness signal.
 - Roslyn's `containerName` is localised display text, not a namespace path.
+- Pull diagnostics: `textDocument/diagnostic` answers unadvertised, returning
+  `kind: "full"` reports. `workspace/diagnostic` also answers but returns zero reports —
+  `workspaceDiagnostics: false` in its dynamic registration is honest. Roslyn leaves
+  `source` null on compiler diagnostics and sends `code` as a string (`"CS0029"`).
 - Source-generated documents use the `roslyn-source-generated:` scheme. `workspace/symbol`,
   `textDocument/definition`, `textDocument/references` and `textDocument/documentSymbol` all
   cover them. `workspace/textDocumentContent` (LSP 3.18) returns the text and needs no declared

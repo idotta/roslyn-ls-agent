@@ -11,15 +11,17 @@ Two constraints drive the design:
 1. **Official tooling only.** The C#-specific component in the query path is Microsoft-published.
 2. **Always current.** A weekly cron bumps the pin and a probe suite gates the bump.
 
-Status: **Milestone 1** — `csx ready` and `csx refs`, cross-project fixture, probe gate, both
-workflows, plus the source-generator and non-ASCII fixture cases. `def` / `diag` / `outline` /
-`impl` / `sym`, the deliberate type error and daemon mode are Milestones 2–4. See [ROADMAP.md](ROADMAP.md).
+Status: **Milestone 2 in progress** — `csx ready`, `csx refs` and `csx diag`, cross-project
+fixture, probe gate, both workflows, plus the source-generator, non-ASCII and deliberate-error
+fixture cases. `def` / `outline` / `impl` / `sym` and daemon mode are Milestones 2–4.
+See [ROADMAP.md](ROADMAP.md).
 
 ## Use
 
 ```
 csx ready                                    # block until the workspace has loaded
 csx refs <symbol | file:line:col> [--max N]  # every reference, with context
+csx diag [path] [--errors-only]              # compiler and analyzer diagnostics
 ```
 
 ```
@@ -35,13 +37,31 @@ Core/Greeter.cs:5:26
   6 | }
 ```
 
+```
+$ csx diag App/TypeError.cs --root fixture
+App/TypeError.cs:18:36 error CS0029: Cannot implicitly convert type 'string' to 'int'
+  17 | {
+> 18 |     internal static int Wrong() => Greeter.Farewell("x");
+  19 | }
+```
+
+`diag` takes a file, a directory, or nothing at all — with no argument it walks every `.cs` file
+under `--root`, skipping `bin` and `obj`. It does *not* use `workspace/diagnostic`: the server
+answers that endpoint but returns zero reports, which is what the `workspaceDiagnostics: false`
+in its dynamic registration means.
+
 Options: `--root <dir>` (default: cwd), `--sentinel <symbol>`, `--max N` (default 50),
-`--context N` (default 1), `--timeout N` seconds (default 180), `--log-level L`, `--json`.
+`--context N` (default 1), `--timeout N` seconds (default 180), `--log-level L`,
+`--errors-only` (`diag` only), `--json`.
 
 Paths are relative to `--root`; lines and columns are one-based.
 
 `refs` exits 1 with `no results` when a symbol resolves but has no references, and 1 with a
 diagnostic when the symbol does not resolve or the workspace never loaded.
+
+`diag` exits 0 whenever the query was answered, findings or not — a clean file is a successful
+`diag`, unlike an empty `refs`, which means the lookup failed. It exits 1 only when the workspace
+never loaded or the path does not exist.
 
 ### Symbol names
 
@@ -62,6 +82,8 @@ Measured on the fixture, Windows 11 / .NET 10.0.301, debug build:
 |---|---|
 | `csx ready` | ~3.9–4.1 s |
 | `csx refs` | ~5.9–14.7 s |
+| `csx diag <file>` | ~11–12 s |
+| `csx diag` (whole fixture, 6 files) | ~16 s |
 
 The same suite on `ubuntu-latest` reaches ready in ~12 s and runs six cases in ~39 s.
 
@@ -137,6 +159,7 @@ weekly bump.
 | Async project load returning empty instead of erroring | `WaitReadyAsync` waits for `workspace/projectInitializationComplete`, then polls a sentinel symbol until it resolves, then fails loudly on timeout. Never `sleep`. |
 | A sentinel that is itself the thing being queried | The sentinel is inferred from a type declaration in the tree, so "symbol absent" and "workspace not loaded" stay distinguishable. The target gets a 10 s grace poll after readiness. |
 | UTF-16 position encoding | The server does not advertise `positionEncoding`, which per LSP 3.17 means utf-16 — the same unit as a .NET string index. `csx` asserts this at `initialize` and refuses to run if a future build negotiates utf-8. A fixture line carrying an astral-plane character (a surrogate pair, so utf-16 and rune counts differ) pins the reported column at 39 in three cases; an accented letter would pass even on a broken implementation. |
+| A first diagnostic pull answered from the misc-files state | A freshly opened document is bound against whatever the server has at that instant, and for the first one that is the misc-files state, which reports only errors needing no project references. `DiagnosticsAsync` re-pulls until two consecutive reports agree (5 s budget). The fixture's error is deliberately *cross-project* — binding it needs Core's reference resolved — so a first-response-only implementation reports nothing and the case fails. |
 | Roslyn ignoring unopened documents | Every query opens its document via `textDocument/didOpen` first — except source-generated ones, which the server owns and answers for without it. |
 | No auto-restore | `probes/run.sh` runs `dotnet restore` on the fixture before starting the server. |
 | Source-generated symbols rendering as a nonexistent path | Generated documents come back under a `roslyn-source-generated:` URI. `new Uri(u).LocalPath` does not throw for one, it returns `/BuildInfo.g.cs`, so `PathUri.Display` branches on the scheme and labels them `<generated>/<assembly>/<hintName>`. Text comes from `workspace/textDocumentContent`. |
@@ -151,7 +174,7 @@ weekly bump.
 ```
 
 Restores the tool and the fixture, builds `csx`, asserts readiness, then runs every case in
-`probes/cases.jsonl`. Exits non-zero on any mismatch. Twelve cases today, including a negative one
+`probes/cases.jsonl`. Exits non-zero on any mismatch. Fifteen cases today, including a negative one
 that pins a query fired before load to a loud failure rather than an empty result.
 
 `cases.jsonl` is one flat JSON object per line with four string fields so `run.sh` can parse it
@@ -171,5 +194,6 @@ src/Csx/                    the thin LSP client and CLI
   Output.cs                 path:line + context formatting
 fixture/                    deliberately tricky solution
   Gen/                      incremental source generator; its output is referenced from App
+  App/TypeError.cs          the deliberate cross-project type error for `csx diag`
 probes/                     cases.jsonl + run.sh
 ```

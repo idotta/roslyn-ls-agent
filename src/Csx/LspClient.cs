@@ -14,6 +14,8 @@ internal sealed class LspClient : IAsyncDisposable
     private readonly HashSet<string> _open = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string[]> _lines = new(StringComparer.OrdinalIgnoreCase);
 
+    private static readonly TimeSpan SettleBudget = TimeSpan.FromSeconds(5);
+
     public string Root { get; }
 
     private LspClient(string root, Process proc, JsonRpc rpc, Endpoints endpoints, StringBuilder stderr)
@@ -132,6 +134,43 @@ internal sealed class LspClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// A freshly opened document is bound against whatever the server has at that instant,
+    /// which for the first one is the misc-files state: it reports only what needs no project
+    /// references. Waiting on readiness is not enough either, since the document was opened
+    /// after it. So re-pull until two consecutive reports agree, or the budget runs out.
+    /// </summary>
+    public async Task<IReadOnlyList<Diagnostic>> DiagnosticsAsync(string uri, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + SettleBudget;
+        var previous = await PullDiagnosticsAsync(uri, ct);
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(250, ct);
+            var next = await PullDiagnosticsAsync(uri, ct);
+            if (Same(previous, next)) return next;
+            previous = next;
+        }
+
+        return previous;
+    }
+
+    private async Task<IReadOnlyList<Diagnostic>> PullDiagnosticsAsync(string uri, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        var report = await _rpc.InvokeWithParameterObjectAsync<DocumentDiagnosticReport?>(
+            "textDocument/diagnostic",
+            new DocumentDiagnosticParams(new TextDocumentIdentifier(uri)),
+            ct);
+        return report?.Items ?? [];
+    }
+
+    private static bool Same(IReadOnlyList<Diagnostic> a, IReadOnlyList<Diagnostic> b) =>
+        a.Count == b.Count && a.Zip(b).All(p =>
+            p.First.Range == p.Second.Range &&
+            p.First.Severity == p.Second.Severity &&
+            p.First.Message == p.Second.Message);
+
+    /// <summary>
     /// Roslyn will not answer requests for a document it does not consider open. Generated
     /// documents are the exception: they are the server's own, it answers for them without a
     /// didOpen, and there is no file to read the text from anyway.
@@ -245,6 +284,9 @@ internal sealed class LspClient : IAsyncDisposable
 
         [JsonRpcMethod("workspace/textDocumentContent/refresh", UseSingleObjectParameterDeserialization = true)]
         public object? OnTextDocumentContentRefresh(JsonElement _) => null;
+
+        [JsonRpcMethod("workspace/diagnostic/refresh", UseSingleObjectParameterDeserialization = true)]
+        public object? OnDiagnosticRefresh(JsonElement _) => null;
 
         [JsonRpcMethod("window/logMessage", UseSingleObjectParameterDeserialization = true)]
         public void OnLogMessage(JsonElement _) { }

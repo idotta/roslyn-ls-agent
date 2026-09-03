@@ -101,3 +101,20 @@ internal sealed record InitializeResult(ServerCapabilities Capabilities);
 internal sealed record ConfigurationItem(string? ScopeUri, string? Section);
 
 internal sealed record ConfigurationParams(ConfigurationItem[] Items);
+
+// Pull diagnostics (LSP 3.17). The server advertises no diagnosticProvider in its
+// initialize result -- it registers dynamically via client/registerCapability, which we
+// accept and discard, so the endpoint is called optimistically. Only the per-document one:
+// workspace/diagnostic exists and answers, but returns zero reports, matching the
+// workspaceDiagnostics: false in that registration. Whole-workspace mode walks the files.
+internal sealed record DocumentDiagnosticParams(TextDocumentIdentifier TextDocument);
+
+internal sealed record DocumentDiagnosticReport(string? Kind, string? ResultId, Diagnostic[]? Items);
+
+// Code is string-or-int per the spec, and severity is absent for "as the client sees fit".
+internal sealed record Diagnostic(
+    Range Range,
+    int? Severity,
+    JsonElement Code,
+    string? Source,
+    string Message);

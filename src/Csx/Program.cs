@@ -10,6 +10,7 @@ internal static partial class Program
         usage:
           csx ready [--sentinel <symbol>]
           csx refs  <symbol | file:line:col> [--max N] [--context N]
+          csx diag  [path] [--errors-only]
 
         options:
           --root <dir>      workspace root (default: current directory)
@@ -18,6 +19,7 @@ internal static partial class Program
           --context N       source lines either side of a hit (default: 1)
           --timeout N       seconds to wait for workspace load (default: 180)
           --log-level L     server log level (default: Warning)
+          --errors-only     diag: drop warnings and below
           --json            machine-readable output
         """;
 
@@ -59,6 +61,9 @@ internal static partial class Program
             case "refs":
                 return await RefsAsync(client, opts, cts.Token);
 
+            case "diag":
+                return await DiagAsync(client, opts, cts.Token);
+
             default:
                 throw new CsxException($"unknown command '{opts.Command}'\n\n{Usage}");
         }
@@ -78,6 +83,57 @@ internal static partial class Program
         await Output.WriteLocationsAsync(
             opts.Root, locations, opts.Max, opts.Context, opts.Json, u => client.LinesAsync(u, ct));
         return locations.Count == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Exit code reports whether the query was answered, not whether the workspace is clean:
+    /// a repo with no diagnostics is a successful `diag`, unlike an empty `refs`, which means
+    /// the lookup failed.
+    /// </summary>
+    private static async Task<int> DiagAsync(LspClient client, Options opts, CancellationToken ct)
+    {
+        await client.WaitReadyAsync(opts.Sentinel ?? InferSentinel(opts.Root), opts.Timeout, ct);
+
+        var findings = new List<(string Uri, Diagnostic Diagnostic)>();
+        if (opts.Argument is { } target)
+        {
+            var full = Path.GetFullPath(Path.Combine(opts.Root, target));
+            if (Directory.Exists(full))
+            {
+                foreach (var uri in SourceFiles(full).Select(PathUri.FromPath))
+                {
+                    findings.AddRange((await client.DiagnosticsAsync(uri, ct)).Select(d => (uri, d)));
+                }
+            }
+            else if (File.Exists(full))
+            {
+                var uri = PathUri.FromPath(full);
+                findings.AddRange((await client.DiagnosticsAsync(uri, ct)).Select(d => (uri, d)));
+            }
+            else
+            {
+                throw new CsxException($"no such file or directory: {target}");
+            }
+        }
+        else
+        {
+            // Per file, not workspace/diagnostic: that endpoint answers but returns zero
+            // reports, which is what workspaceDiagnostics: false in its dynamic registration
+            // means. Verified against 5.12.0-1.26426.8.
+            foreach (var uri in SourceFiles(opts.Root).Select(PathUri.FromPath))
+            {
+                findings.AddRange((await client.DiagnosticsAsync(uri, ct)).Select(d => (uri, d)));
+            }
+        }
+
+        if (opts.ErrorsOnly)
+        {
+            findings.RemoveAll(f => Output.Severity(f.Diagnostic.Severity) != "error");
+        }
+
+        await Output.WriteDiagnosticsAsync(
+            opts.Root, findings, opts.Max, opts.Context, opts.Json, u => client.LinesAsync(u, ct));
+        return 0;
     }
 
     /// <summary>
@@ -189,22 +245,26 @@ internal static partial class Program
     /// </summary>
     private static string InferSentinel(string root)
     {
-        foreach (var file in Directory
-                     .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-                     .Order(StringComparer.OrdinalIgnoreCase))
+        foreach (var file in SourceFiles(root))
         {
-            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") ||
-                file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
-            {
-                continue;
-            }
-
             var m = TypeDeclaration().Match(File.ReadAllText(file));
             if (m.Success) return m.Groups["name"].Value;
         }
 
         throw new CsxException($"could not infer a readiness sentinel under {root}; pass --sentinel");
     }
+
+    /// <summary>
+    /// The workspace's own C# files. Sorted because
+    /// <see cref="Directory.EnumerateFiles(string, string, SearchOption)"/> order is
+    /// filesystem-defined, and neither the inferred sentinel nor the order diagnostics are
+    /// pulled in should depend on which file it happens to hit first.
+    /// </summary>
+    private static IEnumerable<string> SourceFiles(string root) => Directory
+        .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+        .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
+                    !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+        .Order(StringComparer.OrdinalIgnoreCase);
 
     private sealed record Options(
         string Command,
@@ -215,6 +275,7 @@ internal static partial class Program
         int Context,
         TimeSpan Timeout,
         string LogLevel,
+        bool ErrorsOnly,
         bool Json)
     {
         public static Options Parse(string[] argv)
@@ -227,6 +288,7 @@ internal static partial class Program
             var context = 1;
             var timeout = TimeSpan.FromSeconds(180);
             var logLevel = "Warning";
+            var errorsOnly = false;
             var json = false;
 
             for (var i = 1; i < argv.Length; i++)
@@ -239,6 +301,7 @@ internal static partial class Program
                     case "--context": context = int.Parse(Next(argv, ref i)); break;
                     case "--timeout": timeout = TimeSpan.FromSeconds(int.Parse(Next(argv, ref i))); break;
                     case "--log-level": logLevel = Next(argv, ref i); break;
+                    case "--errors-only": errorsOnly = true; break;
                     case "--json": json = true; break;
                     default:
                         if (argv[i].StartsWith('-')) throw new CsxException($"unknown option '{argv[i]}'");
@@ -249,7 +312,8 @@ internal static partial class Program
             }
 
             if (!Directory.Exists(root)) throw new CsxException($"no such directory: {root}");
-            return new Options(command, argument, root, sentinel, max, context, timeout, logLevel, json);
+            return new Options(
+                command, argument, root, sentinel, max, context, timeout, logLevel, errorsOnly, json);
         }
 
         private static string Next(string[] argv, ref int i)

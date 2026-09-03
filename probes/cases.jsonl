@@ -10,3 +10,6 @@
 {"name":"non-ascii-refs-symbol","args":"refs Fixture.Core.Party.Cheer --root fixture","exit":"0","expect":"Core/Party.cs:5|App/Program.cs:11|🎉"}
 {"name":"non-ascii-refs-position","args":"refs App/Program.cs:11:39 --root fixture","exit":"0","expect":"Core/Party.cs:5|App/Program.cs:11"}
 {"name":"non-ascii-refs-json","args":"refs Fixture.Core.Party.Cheer --root fixture --json","exit":"0","expect":"'path': 'App/Program.cs'|'line': 11|'column': 39"}
+{"name":"deliberate-error-diag","args":"diag App/TypeError.cs --root fixture","exit":"0","expect":"App/TypeError.cs:18:36 error CS0029|internal static int Wrong()"}
+{"name":"deliberate-error-diag-json","args":"diag App/TypeError.cs --root fixture --json","exit":"0","expect":"'count': 1|'path': 'App/TypeError.cs'|'line': 18|'column': 36|'severity': 'error'|'code': 'CS0029'"}
+{"name":"deliberate-error-diag-workspace","args":"diag --root fixture --errors-only","exit":"0","expect":"App/TypeError.cs:18:36 error CS0029"}
