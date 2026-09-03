@@ -1,0 +1,56 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  collapse_walkthrough: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+    # bump.yml opens a one-line version-pin PR every Monday; the probes status is its gate.
+    ignore_title_keywords:
+      - "bump roslyn-language-server"
+
+  path_filters:
+    - "!**/bin/**"
+    - "!**/obj/**"
+    - "!.probe-logs/**"
+
+  path_instructions:
+    - path: "src/**/*.cs"
+      instructions: >-
+        .NET 10 / C# 14 CLI and a hand-rolled LSP client. Flag: DateTime.Now instead of
+        DateTime.UtcNow; async void outside an event handler; .Result or .Wait() (this codebase
+        is async from Main down and sync-over-async deadlocks the JSON-RPC read loop); DllImport
+        where LibraryImport belongs; a location or URI rendered through Path/Uri helpers instead
+        of PathUri.Display (roslyn-source-generated: URIs silently produce wrong paths).
+        Positions are UTF-16 code units by design — indexing a .NET string directly is correct,
+        counting runes or UTF-8 bytes is the bug. Prefer C# 14 shapes (extension blocks, the
+        field keyword). Do not suggest adding a NuGet package for LSP types; the hand-rolled
+        DTOs in Protocol.cs are deliberate.
+    - path: "fixture/**"
+      instructions: >-
+        Test fixture code, not production. Its oddities (unused symbols, non-ASCII identifiers
+        and strings, a source generator) exist to be queried by the probes. Do not suggest
+        cleanups, error handling, or style changes here.
+    - path: "probes/**"
+      instructions: >-
+        run.sh must stay POSIX sh parsed with sed only — no jq, no python. cases.jsonl is four
+        flat string fields per line.
+
+  tools:
+    shellcheck:
+      enabled: true
+    markdownlint:
+      enabled: true
+    actionlint:
+      enabled: true
+
+chat:
+  auto_reply: true
