@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  statuses: write
 
 jobs:
   bump:
@@ -21,9 +22,15 @@ jobs:
 
       - run: dotnet tool restore
 
-      # No stable release exists, so --prerelease is load-bearing. Exits 0 when already
-      # current, which makes a quiet week a no-op rather than a red build.
-      - run: dotnet tool update roslyn-language-server --prerelease
+      - name: bump the pin
+        run: |
+          # No stable release exists, so --prerelease is load-bearing. Exits 0 when
+          # already current, which makes a quiet week a no-op rather than a red build.
+          dotnet tool update roslyn-language-server --prerelease
+          # dotnet tool update rewrites the manifest without a trailing newline.
+          if [ -n "$(tail -c1 .config/dotnet-tools.json)" ]; then
+            printf '\n' >> .config/dotnet-tools.json
+          fi
 
       - id: pin
         run: |
@@ -33,7 +40,10 @@ jobs:
       - run: ./probes/run.sh
 
       - uses: peter-evans/create-pull-request@v8
+        id: cpr
         with:
+          # BUMP_TOKEN is optional; see the status step below for what it buys.
+          token: ${{ secrets.BUMP_TOKEN || secrets.GITHUB_TOKEN }}
           title: "bump roslyn-language-server to ${{ steps.pin.outputs.version }}"
           branch: chore/bump-roslyn-ls
           commit-message: "bump roslyn-language-server to ${{ steps.pin.outputs.version }}"
@@ -42,4 +52,18 @@ jobs:
             Automated weekly bump of the pinned language server.
 
             `probes/run.sh` passed against `${{ steps.pin.outputs.version }}` on this runner
-            before the PR was opened; `probe.yml` re-runs it on the PR.
+            before the PR was opened.
+
+      # A PR opened with GITHUB_TOKEN does not trigger workflows, so probe.yml never runs
+      # on it and the PR shows no gate. Publish the probe result above as a commit status
+      # instead, so the PR carries something a reviewer and branch protection can require.
+      # Set a BUMP_TOKEN secret (a PAT with repo scope) to get a native probe.yml run.
+      - if: steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ steps.cpr.outputs.pull-request-head-sha }}" \
+            -f state=success \
+            -f context=probes \
+            -f description="probes passed against ${{ steps.pin.outputs.version }}" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
