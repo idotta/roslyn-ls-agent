@@ -202,8 +202,8 @@ weekly bump.
 ```
 
 Restores the tool and the fixture, builds `csx`, asserts readiness, then runs every case in
-`probes/cases.jsonl`. Exits non-zero on any mismatch. Fifteen cases today, including a negative one
-that pins a query fired before load to a loud failure rather than an empty result.
+`probes/cases.jsonl`. Exits non-zero on any mismatch. Twenty-nine cases today, including a
+negative one that pins a query fired before load to a loud failure rather than an empty result.
 
 `cases.jsonl` is one flat JSON object per line with four string fields so `run.sh` can parse it
 with `sed` alone — no `jq`, which is absent from Git Bash on the dev machine. That keeps it
@@ -223,5 +223,8 @@ src/Csx/                    the thin LSP client and CLI
 fixture/                    deliberately tricky solution
   Gen/                      incremental source generator; its output is referenced from App
   App/TypeError.cs          the deliberate cross-project type error for `csx diag`
+  Core/Party.cs             an astral-plane character on a line carrying a symbol
+  Core/Split*.cs            one type in two documents, plus an overload in one of them
+  Core/Empty.cs             a compilable document that declares nothing
 probes/                     cases.jsonl + run.sh
 ```

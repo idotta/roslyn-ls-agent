@@ -3,7 +3,8 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-03, after `csx def` and `csx outline` closed Milestone 2.
+Last updated: 2026-09-03, after `csx def` and `csx outline` closed Milestone 2 and the
+partial-type / empty-document fixture material closed the last uncovered `outline` branches.
 
 ## Status
 
@@ -36,9 +37,11 @@ Fixture:
       never go stale, so a fixture built on it would pass without testing the path that can.
       `--sourceGeneratorExecutionPreference` was not needed at the default `Automatic`, and
       `workspace/_roslyn_refreshSourceGenerators` now has a stub handler. **Still untested:**
-      staleness itself. No case edits a file mid-session, so nothing yet proves a stale
-      generated symbol gets refreshed rather than served from cache — that needs either a
-      long-lived daemon (Milestone 3) or a case that mutates the fixture and re-queries.
+      staleness itself, and it is *blocked*, not merely undone — see the Milestone 3 item.
+      `csx` is one-shot: every invocation starts its own server and loads the workspace cold,
+      so a probe case that mutates the fixture between two invocations exercises a cold load
+      of changed sources and says nothing about whether a cached generated symbol is
+      refreshed. Nothing can reach that path until a single server outlives an edit.
 - [x] A file with **non-ASCII characters** on a line containing a symbol. Use an **astral-plane
       character (an emoji)**, not just an accented letter: positions are UTF-16 code units, which
       .NET string indices already are, so an accent passes even on a broken implementation. Only
@@ -96,8 +99,11 @@ Commands:
       file and never falls through to the symbol resolver, which would otherwise answer a
       mistyped path with "no symbol matched 'Core/Missing.cs'" and a candidate dump. Overloads
       are collapsed by document first: several matches in one file are not ambiguity for
-      `outline`, only differing documents are. No fixture case covers that — `Greeter` has no
-      overloads — but it is the common real-world shape.
+      `outline`, only differing documents are. `fixture/Core/Split.cs` carries both halves of
+      that distinction — an overloaded `Left` in one document, and a `partial class Split`
+      whose second half lives in `Split.More.cs` — so `outline-overloads-collapse` and
+      `outline-ambiguous-fails` pin each direction. `Core/Empty.cs` declares nothing and pins
+      the exit-0-on-no-symbols path.
       `outline-generated` targets `…BuildInfo.Stamp`, not the type: every case pinning
       `Program.Matches` is member-level, and what Roslyn puts in `containerName` for a *type*
       has never been verified, so a type-level target would have bet the case on an unknown.
@@ -107,7 +113,7 @@ semicolon, say), and waiting on readiness does not help because the document is 
 `LspClient.DiagnosticsAsync` re-pulls until two consecutive reports agree, with a 5 s budget;
 `deliberate-error-diag` is the case that pins it, via the cross-project error above.
 
-- [x] Expand `cases.jsonl` to cover `def` and `outline` — 26 cases now. `outline-truncates`
+- [x] Expand `cases.jsonl` to cover `def` and `outline` — 29 cases now. `outline-truncates`
       pins `--max`, the only genuinely new capping logic in this milestone;
       `def-no-definition-fails` pins the empty-result exit 1, which is the one failure path
       `def` actually added (a symbol that does not exist was already pinned by
@@ -129,6 +135,13 @@ semicolon, say), and waiting on readiness does not help because the document is 
 - [ ] Consider `--daemonKeepAlive` / `ROSLYN_LANGUAGE_SERVER_DAEMON_KEEPALIVE`; default is 900 s,
       `-1` keeps it alive indefinitely.
 - [ ] Re-measure latency warm and update the README table.
+- [ ] **Source-generator staleness**, carried over from Milestone 2 and only reachable here.
+      With one server outliving an edit: query `Fixture.Core.Generated.BuildInfo.Stamp`, rename
+      `Greeter` (the syntax provider the generator keys on), re-query, and assert the generated
+      symbol goes away — then restore and assert it comes back. Roslyn drives this through
+      `workspace/_roslyn_refreshSourceGenerators`, which today has a stub handler that answers
+      and discards; a daemon has to actually invalidate on it. This is the one Milestone 2
+      fixture bullet whose note outran its checkbox.
 - [ ] Write `skill/SKILL.md`.
 
 `SKILL.md` conventions: YAML frontmatter with `name` and `description`, where the description is
