@@ -11,16 +11,18 @@ Two constraints drive the design:
 1. **Official tooling only.** The C#-specific component in the query path is Microsoft-published.
 2. **Always current.** A weekly cron bumps the pin and a probe suite gates the bump.
 
-Status: **Milestone 2 in progress** — `csx ready`, `csx refs` and `csx diag`, cross-project
-fixture, probe gate, both workflows, plus the source-generator, non-ASCII and deliberate-error
-fixture cases. `def` / `outline` / `impl` / `sym` and daemon mode are Milestones 2–4.
-See [ROADMAP.md](ROADMAP.md).
+Status: **Milestone 2 done** — `csx ready`, `csx refs`, `csx def`, `csx outline` and
+`csx diag`, cross-project fixture, probe gate, both workflows, plus the source-generator,
+non-ASCII and deliberate-error fixture cases. `impl` / `sym` and daemon mode are
+Milestones 3–4. See [ROADMAP.md](ROADMAP.md).
 
 ## Use
 
 ```
 csx ready                                    # block until the workspace has loaded
 csx refs <symbol | file:line:col> [--max N]  # every reference, with context
+csx def <symbol | file:line:col>             # where it is declared
+csx outline <file | symbol> [--max N]        # the declarations in one document
 csx diag [path] [--errors-only]              # compiler and analyzer diagnostics
 ```
 
@@ -36,6 +38,30 @@ Core/Greeter.cs:5:26
 > 5 |     public static string Greet(string name) => $"Hello, {name}!";
   6 | }
 ```
+
+```
+$ csx def App/Program.cs:9:35 --root fixture
+Core/Greeter.cs:5:26
+  4 | {
+> 5 |     public static string Greet(string name) => $"Hello, {name}!";
+  6 | }
+```
+
+```
+$ csx outline Core/Greeter.cs --root fixture
+Core/Greeter.cs
+  1 | namespace Fixture.Core;
+  3 |   public static class Greeter
+  5 |     public static string Greet(string name) => $"Hello, {name}!";
+  9 |     public static string Farewell(string name) => $"Bye, {name}!";
+```
+
+`outline` is the one command that does not print `path:line` and context per row — an outline
+is already the summary, so the document path is a header and each row carries that
+declaration's own source line, indented by nesting. `--context` does not apply to it. Its
+target is a file path, a `file:line:col` spec (the document it names is outlined, so a position
+copied out of a `def` result works), or a symbol whose declaring document is outlined — the
+last being the only way to reach a source-generated document, which has no path on disk.
 
 ```
 $ csx diag App/TypeError.cs --root fixture
@@ -82,6 +108,8 @@ Measured on the fixture, Windows 11 / .NET 10.0.301, debug build:
 |---|---|
 | `csx ready` | ~3.9–4.1 s |
 | `csx refs` | ~5.9–14.7 s |
+| `csx def` | ~6.4–7.0 s |
+| `csx outline` | ~5.4–6.2 s |
 | `csx diag <file>` | ~11–12 s |
 | `csx diag` (whole fixture, 6 files) | ~16 s |
 
@@ -191,7 +219,7 @@ src/Csx/                    the thin LSP client and CLI
   ServerArgs.cs             the only place server flags live
   Protocol.cs               hand-defined LSP payload types
   LspClient.cs              transport, initialize, readiness, didOpen
-  Output.cs                 path:line + context formatting
+  Output.cs                 path:line + context formatting, and the outline tree
 fixture/                    deliberately tricky solution
   Gen/                      incremental source generator; its output is referenced from App
   App/TypeError.cs          the deliberate cross-project type error for `csx diag`

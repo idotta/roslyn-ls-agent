@@ -6,7 +6,9 @@
 # (name, args, exit, expect) so it can be parsed with sed alone -- no jq, no python,
 # so the same script runs on a GitHub runner and in Git Bash on Windows. Inside
 # `expect`, ' stands for " and | separates substrings that must all appear in the
-# combined stdout+stderr of the command.
+# combined stdout+stderr of the command. That separator means an expectation can never
+# quote a rendered `csx outline` row, whose gutter is also | -- pasting one in silently
+# becomes two weaker substring matches. Assert bare declarations instead.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."

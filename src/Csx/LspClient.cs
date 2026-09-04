@@ -69,7 +69,8 @@ internal sealed class LspClient : IAsyncDisposable
                 new GeneralCapabilities([ServerArgs.ExpectedPositionEncoding]),
                 new TextDocumentCapabilities(
                     new SynchronizationCapabilities(true),
-                    new DiagnosticCapabilities(true, true)),
+                    new DiagnosticCapabilities(true, true),
+                    new DocumentSymbolCapabilities(true, true)),
                 new WorkspaceCapabilities(true, true, new SymbolCapabilities(true)),
                 new WindowCapabilities(true)),
             [new WorkspaceFolder(uri, Path.GetFileName(Root.TrimEnd(Path.DirectorySeparatorChar)))]);
@@ -129,6 +130,32 @@ internal sealed class LspClient : IAsyncDisposable
         var result = await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
             "textDocument/references",
             new ReferenceParams(new TextDocumentIdentifier(uri), position, new ReferenceContext(true)),
+            ct);
+        return result ?? [];
+    }
+
+    /// <summary>
+    /// Location[], not LocationLink[]: the client does not declare
+    /// textDocument.definition.linkSupport, so per LSP 3.17 the server owes us the plain form.
+    /// Deliberately no two-shape reader — if that ever stops holding, a deserialization
+    /// failure is a better outcome than silently rendering half a response.
+    /// </summary>
+    public async Task<IReadOnlyList<Location>> DefinitionAsync(string uri, Position position, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        var result = await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
+            "textDocument/definition",
+            new TextDocumentPositionParams(new TextDocumentIdentifier(uri), position),
+            ct);
+        return result ?? [];
+    }
+
+    public async Task<IReadOnlyList<DocumentSymbol>> DocumentSymbolsAsync(string uri, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        var result = await _rpc.InvokeWithParameterObjectAsync<DocumentSymbol[]?>(
+            "textDocument/documentSymbol",
+            new DocumentSymbolParams(new TextDocumentIdentifier(uri)),
             ct);
         return result ?? [];
     }

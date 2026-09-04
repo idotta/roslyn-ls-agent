@@ -25,6 +25,17 @@ near-useless to a model.
 - `--json` for the probe harness to assert against.
 - Every new command follows these. They are the reason this is a CLI and not a wrapper.
 
+**`outline` is the one deliberate exception.** It prints the document path once as a header
+and then one row per declaration — that declaration's own source line, indented by nesting —
+with no per-row `path:line:col`, no `>` marker and no surrounding context, and `--context` is
+inert for it. An outline *is* the summary the other rules exist to produce; repeating the path
+on every row and padding each with context lines would make a whole file unreadable and cost
+the context window the rules are meant to protect. Everything else still holds: one-based
+lines, root-relative paths, `--max` (over the pre-order flattening, so a truncated tree is
+always a prefix and no node outlives its parent) and the same `{ count, truncated, results }`
+JSON envelope, with `path` and `generated` on the envelope because the whole document is one
+URI.
+
 Source-generated locations are labelled `<generated>/<assemblyName>/<hintName>`, built only
 from the URI fields that are stable across runs and machines. **Known limitation:** none of
 those fields identifies the *consuming* project, so one generator applied to several projects

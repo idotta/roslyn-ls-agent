@@ -178,6 +178,140 @@ internal static class Output
         }
     }
 
+    /// <summary>
+    /// The one command that does not print path:line plus context per row — see DESIGN.md.
+    /// An outline is already the summary, so it renders as a tree: the document path once as
+    /// a header, then one row per symbol carrying that declaration's own source line,
+    /// indented by nesting depth. <paramref name="max"/> caps rows over the pre-order
+    /// flattening, so a truncated tree is always a prefix and no node outlives its parent.
+    /// </summary>
+    public static async Task WriteOutlineAsync(
+        string root,
+        string uri,
+        IReadOnlyList<DocumentSymbol> symbols,
+        int max,
+        bool json,
+        Func<string, Task<string[]>> linesOf)
+    {
+        var display = PathUri.Display(root, uri);
+        var total = Count(symbols);
+        var kept = Math.Min(max, total);
+        var lines = await linesOf(uri);
+
+        if (json)
+        {
+            var budget = kept;
+            Console.WriteLine(JsonSerializer.Serialize(
+                new
+                {
+                    count = total,
+                    truncated = total > kept,
+                    path = display,
+                    generated = PathUri.IsGenerated(uri),
+                    results = Nodes(symbols, lines, ref budget),
+                },
+                JsonOut));
+            return;
+        }
+
+        Console.WriteLine(display);
+        if (total == 0)
+        {
+            Console.WriteLine("no symbols");
+            return;
+        }
+
+        var rows = Flatten(symbols).Take(kept).ToList();
+        var width = rows.Max(r => r.Symbol.SelectionRange.Start.Line + 1).ToString().Length;
+        foreach (var row in rows)
+        {
+            var line = row.Symbol.SelectionRange.Start.Line;
+            var text = At(lines, line)?.Trim() ?? row.Symbol.Name;
+            Console.WriteLine($"  {(line + 1).ToString().PadLeft(width)} | {new string(' ', row.Depth * 2)}{text}");
+        }
+
+        if (total > kept)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"... {total - kept} more (use --max {total} to see all)");
+        }
+    }
+
+    private static int Count(IReadOnlyList<DocumentSymbol> symbols) =>
+        symbols.Sum(s => 1 + Count(s.Children ?? []));
+
+    private static IEnumerable<(DocumentSymbol Symbol, int Depth)> Flatten(
+        IReadOnlyList<DocumentSymbol> symbols, int depth = 0)
+    {
+        foreach (var symbol in symbols)
+        {
+            yield return (symbol, depth);
+            foreach (var child in Flatten(symbol.Children ?? [], depth + 1)) yield return child;
+        }
+    }
+
+    // Pruned against the same pre-order budget the text form uses, so --max means the same
+    // thing in both and a JSON case and a text case stay cases about the same output.
+    private static List<object> Nodes(IReadOnlyList<DocumentSymbol> symbols, string[] lines, ref int budget)
+    {
+        var nodes = new List<object>();
+        foreach (var symbol in symbols)
+        {
+            if (budget <= 0) break;
+            budget--;
+
+            var start = symbol.SelectionRange.Start;
+            var end = symbol.SelectionRange.End;
+            nodes.Add(new
+            {
+                name = symbol.Name,
+                kind = Kind(symbol.Kind),
+                detail = symbol.Detail,
+                line = start.Line + 1,
+                column = start.Character + 1,
+                endLine = end.Line + 1,
+                endColumn = end.Character + 1,
+                text = At(lines, start.Line)?.TrimEnd(),
+                children = Nodes(symbol.Children ?? [], lines, ref budget),
+            });
+        }
+
+        return nodes;
+    }
+
+    // LSP SymbolKind. An unmapped value renders as its integer rather than "unknown": the
+    // server is free to add kinds, and dropping the one fact we have helps nobody.
+    private static string Kind(int kind) => kind switch
+    {
+        1 => "file",
+        2 => "module",
+        3 => "namespace",
+        4 => "package",
+        5 => "class",
+        6 => "method",
+        7 => "property",
+        8 => "field",
+        9 => "constructor",
+        10 => "enum",
+        11 => "interface",
+        12 => "function",
+        13 => "variable",
+        14 => "constant",
+        15 => "string",
+        16 => "number",
+        17 => "boolean",
+        18 => "array",
+        19 => "object",
+        20 => "key",
+        21 => "null",
+        22 => "enumMember",
+        23 => "struct",
+        24 => "event",
+        25 => "operator",
+        26 => "typeParameter",
+        _ => kind.ToString(),
+    };
+
     public static string Severity(int? severity) => severity switch
     {
         1 => "error",
