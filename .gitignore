@@ -6,3 +6,5 @@ artifacts/
 
 # Local Claude Code session state, not part of the project.
 .remember/
+
+.tmp/
