@@ -128,20 +128,44 @@ semicolon, say), and waiting on readiness does not help because the document is 
 
 ## Milestone 3 — daemon and skill
 
+Wire behaviour was probed on 2026-09-04 before anything was designed around it; the daemon
+entries under "Verified facts" are the output. Three findings move this milestone: the daemon
+is **shared**, not per-client; `LspClient` needs no protocol change at all; and source-generator
+staleness is already reachable without any client work.
+
 - [ ] Switch `ServerArgs` to `--daemon-mode`. Do **not** pass `--clientProcessId`; it makes the
-      server exit when the client does, which defeats the point.
-- [ ] Verify a second concurrent client gets its own isolated server instance.
-- [ ] Verify the daemon survives killing the first client's whole process tree.
-- [ ] Consider `--daemonKeepAlive` / `ROSLYN_LANGUAGE_SERVER_DAEMON_KEEPALIVE`; default is 900 s,
-      `-1` keeps it alive indefinitely.
-- [ ] Re-measure latency warm and update the README table.
-- [ ] **Source-generator staleness**, carried over from Milestone 2 and only reachable here.
-      With one server outliving an edit: query `Fixture.Core.Generated.BuildInfo.Stamp`, rename
-      `Greeter` (the syntax provider the generator keys on), re-query, and assert the generated
-      symbol goes away — then restore and assert it comes back. Roslyn drives this through
-      `workspace/_roslyn_refreshSourceGenerators`, which today has a stub handler that answers
-      and discards; a daemon has to actually invalidate on it. This is the one Milestone 2
-      fixture bullet whose note outran its checkbox.
+      server exit when the client does, which defeats the point. Built during the probe as the
+      instrument and currently uncommitted: `ServerArgs.Daemon` plus a `--daemon` opt-in flag
+      threaded through `Options` into `LspClient.StartAsync`.
+- [ ] **Decide default-on versus opt-in.** ~3.2x on `refs` argues for default-on with an opt-out,
+      but a shared daemon that outlives the run means `probes/run.sh` stops exercising cold load
+      unless it scopes itself with `ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME` and a short
+      keepalive.
+- [x] Verify what a second concurrent client gets. It **shares** the first client's daemon; the
+      earlier "own isolated server instance" wording here was a wrong guess, and sharing is the
+      documented design. One daemon served two different `--root`s with no symbol leakage in
+      either direction, order-independent; three simultaneous clients all exited 0.
+- [x] Verify the daemon survives killing the first client's whole process tree. It does —
+      `taskkill /T /F` on the `csx` chain left the daemon up and the next client reconnected to
+      the same pid. Our own `shutdown` + `exit` does not kill it either.
+- [x] `--daemonKeepAlive` / `ROSLYN_LANGUAGE_SERVER_DAEMON_KEEPALIVE` confirmed: default 900 s
+      after the last client disconnects, and the env var propagates by plain inheritance through
+      the whole launch chain.
+- [x] Re-measure latency warm and update the README table.
+- [ ] **Source-generator staleness**, carried over from Milestone 2. No longer blocked, and it
+      needs neither `didChange` nor a `didChangeWatchedFiles` capability — the daemon runs its
+      own file watcher. Query `Fixture.Core.Generated.BuildInfo.Stamp`, rename `Greeter` (the
+      syntax provider the generator keys on) on disk, re-query with a fresh client against the
+      same daemon, assert the generated symbol goes away — then restore and assert it comes
+      back. Ran 3/3 deterministic in both directions during the probe.
+      **Two things the case must get right.** Absence is also what an unloaded workspace looks
+      like, so the rename leg can pass for the wrong reason; gate it on `--sentinel Cheer`,
+      which the rename does not touch, so the workspace is provably loaded before absence is
+      concluded. Only the restore-and-present leg proves the daemon is live and correct — run
+      the pair in order. This is also the first probe case that writes to the fixture, so
+      `run.sh` must restore `fixture/Core/Greeter.cs` even on failure.
+- [ ] Assert on the silent non-daemon fallback (see the daemon facts below) — a fallback run
+      answers correctly and only latency or one stderr line gives it away.
 - [ ] Write `skill/SKILL.md`.
 
 `SKILL.md` conventions: YAML frontmatter with `name` and `description`, where the description is
@@ -168,13 +192,15 @@ agent to run `csx ready` once at session start.
 - [x] `csx outline` renders a nested document outline, including a generated document
 - [x] Probe suite fails loudly when the server returns empty due to premature querying
 - [x] `bump.yml` opens a PR that is gated (see the `probes` commit status caveat in the README)
-- [ ] Two concurrent clients work; daemon survives killing client 1's process tree
-- [ ] Warm command latency measured and recorded in the README
+- [x] Two concurrent clients work (sharing one daemon); daemon survives killing client 1's
+      process tree
+- [x] Warm command latency measured and recorded in the README
 
 ## Verified facts, and when
 
 Re-verify before relying on these; the server is a fast-moving prerelease train. All confirmed
-against nuget.org and the shipped binary on 2026-09-02/03.
+against nuget.org and the shipped binary on 2026-09-02/03, and the daemon entries on 2026-09-04
+against 5.12.0-1.26426.8 / win-x64.
 
 - No stable release exists. Every RID package lists a bare `5.11.0`, but it is **unlisted**, and
   the non-RID tool ID never had one. `--prerelease` is load-bearing. Never pick a version by
@@ -204,3 +230,51 @@ against nuget.org and the shipped binary on 2026-09-02/03.
   and `documentId` are regenerated on every workspace load.
 - `DOTNET_CLI_UI_LANGUAGE=en` pins Roslyn's own display strings, but StreamJsonRpc's error text
   still came back localised (Portuguese on this machine). Do not assert on transport error text.
+
+### The daemon
+
+Two sources beyond experiment, both shipped in the package and both worth re-reading before
+trusting any of this: `roslyn-language-server.xml` next to the thin client documents the whole
+daemon design (`DaemonBootstrap`, `DaemonPipeName`, `DaemonServerMutex`, `ChildServerHost`,
+`ExitCodes`) including *why* the bootstrap exists, and the dll's UTF-16 string table carries the
+flag and env-var names that appear in no `--help`.
+
+- **The launch chain is four processes deep**, and the middle one is deliberate:
+
+  ```
+  csx
+   └─ dotnet tool run
+       └─ roslyn-language-server.exe --daemon-mode --stdio --autoLoadProjects --logLevel L
+           └─ roslyn-language-server.exe --daemon-launch   (bootstrap, exits immediately)
+               └─ Microsoft.CodeAnalysis.LanguageServer.exe --daemon --pipe <name> ...
+  ```
+
+  The thin client relaunches *itself* as a short-lived bootstrap purely so the daemon is
+  orphaned rather than a descendant — the XML doc says process-tree teardowns walk parent/child
+  links, which "neither Windows job-object breakaway nor Unix `setsid` change". The bootstrap
+  waits on the server mutex, then exits. The thin client then relays our stdio to the daemon's
+  named pipe.
+- **`LspClient` needs no protocol change**: same `initialize`, same stdio
+  `HeaderDelimitedMessageHandler`. Daemon mode is an argv change and nothing else.
+- **One daemon is shared across workspaces, not one per client.** The pipe name is a hash of
+  user identity plus the server exe's versioned path — *not* the workspace. `--daemon` on the
+  server is documented as "run as a multi-client daemon".
+- **The daemon takes its configuration from whoever launched it.** It inherits the *first*
+  client's `--autoLoadProjects` and `--logLevel`, both visible in its cmdline; later clients only
+  connect. So `csx --log-level Debug` is silently a no-op against an already-running daemon.
+  Inferred from the observed cmdline, not separately tested.
+- **`ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME=<literal>`** yields a fully isolated daemon under
+  that exact name; a client without it starts a separate daemon alongside. This is the per-run
+  scoping a probe suite wants. Keepalive defaults to 900 s after the last client disconnects
+  (`-1` for indefinite) and `ROSLYN_LANGUAGE_SERVER_DAEMON_KEEPALIVE` propagates by plain env
+  inheritance down the whole chain.
+- **There is a silent non-daemon fallback.** The dll carries "Falling back to non-daemon mode"
+  and "Running language server in non-daemon fallback mode" (a daemon startup-mutex timeout, for
+  one). A fallback run still answers correctly, just cold — nothing but latency or that stderr
+  line distinguishes it. Found in the string table, not yet triggered deliberately.
+- **A root with only a `.csproj` and no solution never becomes ready**, daemon or not.
+  `projectInitializationComplete` never fires and `workspace/symbol` stays empty for the full
+  timeout; `--autoLoadProjects` does not discover a bare project. Adding a `.slnx` fixes it
+  immediately. This belongs in `SKILL.md`.
+- `premature-query-fails-loudly` still exits 1 against a warm daemon, because `--timeout 0` means
+  `WaitReadyAsync` never issues a query at all. That case pins the timeout guard, not cold load.

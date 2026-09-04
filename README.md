@@ -116,8 +116,19 @@ Measured on the fixture, Windows 11 / .NET 10.0.301, debug build:
 The same suite on `ubuntu-latest` reaches ready in ~12 s and runs six cases in ~39 s.
 
 Milestone 1 starts a dedicated server per invocation, so every command pays a full solution
-load. Milestone 3 switches to `--daemon-mode`, where the cost should be a pipe round-trip
-against an already-warm server; warm numbers get recorded here then.
+load. Milestone 3 switches to `--daemon-mode`, where the cost is a pipe round-trip against an
+already-warm server. Measured the same way on 2026-09-04:
+
+| command | non-daemon | daemon cold | daemon warm |
+|---|---|---|---|
+| `csx ready` | 7.3 s | 6.3 s | 2.53–2.56 s |
+| `csx refs` | 9.6–10.4 s | — | 3.10–3.23 s |
+| `csx def` | — | — | 2.64–2.75 s |
+| `csx outline` | — | — | 2.59 s |
+
+About 3.2x on `refs`, with little variance across repeats. The warm floor is `dotnet tool run`
+plus apphost startup plus connecting the relay — not Roslyn — so it is a floor `csx` cannot
+get under while it launches through `dotnet tool run`.
 
 ## The pin
 
