@@ -21,7 +21,7 @@ internal sealed class LspClient : IAsyncDisposable
     private LspClient(string root, Process proc, JsonRpc rpc, Endpoints endpoints, StringBuilder stderr)
         => (Root, _proc, _rpc, _endpoints, _stderr) = (root, proc, rpc, endpoints, stderr);
 
-    public static async Task<LspClient> StartAsync(string root, string logLevel, CancellationToken ct)
+    public static async Task<LspClient> StartAsync(string root, string logLevel, bool daemon, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(ServerArgs.Command)
         {
@@ -31,7 +31,8 @@ internal sealed class LspClient : IAsyncDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        foreach (var a in ServerArgs.Stdio(logLevel)) psi.ArgumentList.Add(a);
+        var args = daemon ? ServerArgs.Daemon(logLevel) : ServerArgs.Stdio(logLevel);
+        foreach (var a in args) psi.ArgumentList.Add(a);
 
         // Roslyn localises the display strings it puts in LSP responses. Pin English so
         // output is the same for an agent regardless of the developer's machine locale.

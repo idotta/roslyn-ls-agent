@@ -23,6 +23,7 @@ internal static partial class Program
           --log-level L     server log level (default: Warning)
           --errors-only     diag: drop warnings and below
           --json            machine-readable output
+          --daemon          use the shared multi-client server daemon
         """;
 
     private static async Task<int> Main(string[] argv)
@@ -50,7 +51,7 @@ internal static partial class Program
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-        await using var client = await LspClient.StartAsync(opts.Root, opts.LogLevel, cts.Token);
+        await using var client = await LspClient.StartAsync(opts.Root, opts.LogLevel, opts.Daemon, cts.Token);
 
         switch (opts.Command)
         {
@@ -362,7 +363,8 @@ internal static partial class Program
         TimeSpan Timeout,
         string LogLevel,
         bool ErrorsOnly,
-        bool Json)
+        bool Json,
+        bool Daemon)
     {
         public static Options Parse(string[] argv)
         {
@@ -376,6 +378,7 @@ internal static partial class Program
             var logLevel = "Warning";
             var errorsOnly = false;
             var json = false;
+            var daemon = false;
 
             for (var i = 1; i < argv.Length; i++)
             {
@@ -389,6 +392,7 @@ internal static partial class Program
                     case "--log-level": logLevel = Next(argv, ref i); break;
                     case "--errors-only": errorsOnly = true; break;
                     case "--json": json = true; break;
+                    case "--daemon": daemon = true; break;
                     default:
                         if (argv[i].StartsWith('-')) throw new CsxException($"unknown option '{argv[i]}'");
                         if (argument is not null) throw new CsxException($"unexpected argument '{argv[i]}'");
@@ -399,7 +403,8 @@ internal static partial class Program
 
             if (!Directory.Exists(root)) throw new CsxException($"no such directory: {root}");
             return new Options(
-                command, argument, root, sentinel, max, context, timeout, logLevel, errorsOnly, json);
+                command, argument, root, sentinel, max, context, timeout, logLevel, errorsOnly, json,
+                daemon);
         }
 
         private static string Next(string[] argv, ref int i)

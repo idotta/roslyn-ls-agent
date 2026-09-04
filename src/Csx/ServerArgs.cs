@@ -19,6 +19,24 @@ internal static class ServerArgs
     ];
 
     /// <summary>
+    /// Milestone 3: connect to (or start) the shared multi-client daemon. The thin client
+    /// takes <c>--daemon-mode</c>; the server's own equivalent is <c>--daemon</c>, which the
+    /// thin client passes to a detached double launch of its own. Deliberately no
+    /// <c>--clientProcessId</c>: the server exits when that process does, which is the whole
+    /// point of a daemon. Note the daemon is scoped by user and server path only, so the
+    /// first client's <c>--autoLoadProjects</c> / <c>--logLevel</c> configure it for every
+    /// later client, whatever they ask for.
+    /// </summary>
+    public static string[] Daemon(string logLevel) =>
+    [
+        "tool", "run", "roslyn-language-server",
+        "--daemon-mode",
+        "--stdio",
+        "--autoLoadProjects",
+        "--logLevel", logLevel,
+    ];
+
+    /// <summary>
     /// LSP 3.17 position encoding. The server does not advertise
     /// <c>positionEncoding</c> in its initialize result, which per spec means
     /// utf-16 — the same unit as a .NET string index. Anything else would break
