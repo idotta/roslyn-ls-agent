@@ -14,6 +14,8 @@ internal sealed class LspClient : IAsyncDisposable
     private readonly HashSet<string> _open = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string[]> _lines = new(StringComparer.OrdinalIgnoreCase);
 
+    private static readonly TimeSpan SettleBudget = TimeSpan.FromSeconds(5);
+
     public string Root { get; }
 
     private LspClient(string root, Process proc, JsonRpc rpc, Endpoints endpoints, StringBuilder stderr)
@@ -67,7 +69,8 @@ internal sealed class LspClient : IAsyncDisposable
                 new GeneralCapabilities([ServerArgs.ExpectedPositionEncoding]),
                 new TextDocumentCapabilities(
                     new SynchronizationCapabilities(true),
-                    new DiagnosticCapabilities(true, true)),
+                    new DiagnosticCapabilities(true, true),
+                    new DocumentSymbolCapabilities(true, true)),
                 new WorkspaceCapabilities(true, true, new SymbolCapabilities(true)),
                 new WindowCapabilities(true)),
             [new WorkspaceFolder(uri, Path.GetFileName(Root.TrimEnd(Path.DirectorySeparatorChar)))]);
@@ -130,6 +133,69 @@ internal sealed class LspClient : IAsyncDisposable
             ct);
         return result ?? [];
     }
+
+    /// <summary>
+    /// Location[], not LocationLink[]: the client does not declare
+    /// textDocument.definition.linkSupport, so per LSP 3.17 the server owes us the plain form.
+    /// Deliberately no two-shape reader — if that ever stops holding, a deserialization
+    /// failure is a better outcome than silently rendering half a response.
+    /// </summary>
+    public async Task<IReadOnlyList<Location>> DefinitionAsync(string uri, Position position, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        var result = await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
+            "textDocument/definition",
+            new TextDocumentPositionParams(new TextDocumentIdentifier(uri), position),
+            ct);
+        return result ?? [];
+    }
+
+    public async Task<IReadOnlyList<DocumentSymbol>> DocumentSymbolsAsync(string uri, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        var result = await _rpc.InvokeWithParameterObjectAsync<DocumentSymbol[]?>(
+            "textDocument/documentSymbol",
+            new DocumentSymbolParams(new TextDocumentIdentifier(uri)),
+            ct);
+        return result ?? [];
+    }
+
+    /// <summary>
+    /// A freshly opened document is bound against whatever the server has at that instant,
+    /// which for the first one is the misc-files state: it reports only what needs no project
+    /// references. Waiting on readiness is not enough either, since the document was opened
+    /// after it. So re-pull until two consecutive reports agree, or the budget runs out.
+    /// </summary>
+    public async Task<IReadOnlyList<Diagnostic>> DiagnosticsAsync(string uri, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + SettleBudget;
+        var previous = await PullDiagnosticsAsync(uri, ct);
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(250, ct);
+            var next = await PullDiagnosticsAsync(uri, ct);
+            if (Same(previous, next)) return next;
+            previous = next;
+        }
+
+        return previous;
+    }
+
+    private async Task<IReadOnlyList<Diagnostic>> PullDiagnosticsAsync(string uri, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        var report = await _rpc.InvokeWithParameterObjectAsync<DocumentDiagnosticReport?>(
+            "textDocument/diagnostic",
+            new DocumentDiagnosticParams(new TextDocumentIdentifier(uri)),
+            ct);
+        return report?.Items ?? [];
+    }
+
+    private static bool Same(IReadOnlyList<Diagnostic> a, IReadOnlyList<Diagnostic> b) =>
+        a.Count == b.Count && a.Zip(b).All(p =>
+            p.First.Range == p.Second.Range &&
+            p.First.Severity == p.Second.Severity &&
+            p.First.Message == p.Second.Message);
 
     /// <summary>
     /// Roslyn will not answer requests for a document it does not consider open. Generated
@@ -245,6 +311,9 @@ internal sealed class LspClient : IAsyncDisposable
 
         [JsonRpcMethod("workspace/textDocumentContent/refresh", UseSingleObjectParameterDeserialization = true)]
         public object? OnTextDocumentContentRefresh(JsonElement _) => null;
+
+        [JsonRpcMethod("workspace/diagnostic/refresh", UseSingleObjectParameterDeserialization = true)]
+        public object? OnDiagnosticRefresh(JsonElement _) => null;
 
         [JsonRpcMethod("window/logMessage", UseSingleObjectParameterDeserialization = true)]
         public void OnLogMessage(JsonElement _) { }

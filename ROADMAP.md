@@ -3,14 +3,15 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-03, after the Milestone 2 source-generator fixture.
+Last updated: 2026-09-03, after `csx def` and `csx outline` closed Milestone 2 and the
+partial-type / empty-document fixture material closed the last uncovered `outline` branches.
 
 ## Status
 
 | Milestone | Scope | State |
 |---|---|---|
 | 1 | `ready` + `refs`, cross-project fixture, probe gate, both workflows | **done** |
-| 2 | The hard fixture cases and the read commands | in progress |
+| 2 | The hard fixture cases and the read commands | **done** |
 | 3 | Daemon mode, then `skill/SKILL.md` | not started |
 | 4 | Remaining commands and output tuning | not started |
 
@@ -36,42 +37,94 @@ Fixture:
       never go stale, so a fixture built on it would pass without testing the path that can.
       `--sourceGeneratorExecutionPreference` was not needed at the default `Automatic`, and
       `workspace/_roslyn_refreshSourceGenerators` now has a stub handler. **Still untested:**
-      staleness itself. No case edits a file mid-session, so nothing yet proves a stale
-      generated symbol gets refreshed rather than served from cache — that needs either a
-      long-lived daemon (Milestone 3) or a case that mutates the fixture and re-queries.
-- [ ] A file with **non-ASCII characters** on a line containing a symbol. Use an **astral-plane
+      staleness itself, and it is *blocked*, not merely undone — see the Milestone 3 item.
+      `csx` is one-shot: every invocation starts its own server and loads the workspace cold,
+      so a probe case that mutates the fixture between two invocations exercises a cold load
+      of changed sources and says nothing about whether a cached generated symbol is
+      refreshed. Nothing can reach that path until a single server outlives an edit.
+- [x] A file with **non-ASCII characters** on a line containing a symbol. Use an **astral-plane
       character (an emoji)**, not just an accented letter: positions are UTF-16 code units, which
       .NET string indices already are, so an accent passes even on a broken implementation. Only
       a surrogate pair catches code that counts runes or UTF-8 bytes.
-- [ ] One **deliberate type error** for `csx diag`. It must live in **App**, or a new
+      `fixture/Core/Party.cs` declares `Cheer` on an emoji-bearing line; `App/Program.cs:11`
+      calls it with the emoji *before* the call, putting `Cheer` at UTF-16 column 39 (rune
+      counting gives 38, UTF-8 bytes 41). No code in `csx` counts characters today —
+      `LocateAsync` forwards the caller's column and `Output` renders the server's — so these
+      cases pin the server staying UTF-16 behaviourally, `didOpen` text matching what Roslyn
+      parses off disk, and insurance for `def` / `outline` later. **Known gap:** the position
+      case catches a rune-counting error (column 38 lands on the `.` and resolves `Party`, so
+      the case fails) but not a UTF-8 one (41 is still inside `Cheer`); the `'column': 39`
+      assertion in the JSON case is what covers that direction.
+- [x] One **deliberate type error** for `csx diag`. It must live in **App**, or a new
       project — never in Core. `probes/run.sh` compiles Core to arm its `CS9057` guard (the
       analyzer-vs-compiler version mismatch that otherwise degrades to a silently absent
       generated symbol), so an uncompilable Core would disarm that guard permanently.
+      `fixture/App/TypeError.cs` holds a **cross-project** CS0029 (`int Wrong() =>
+      Greeter.Farewell("x")`, a member Core exposes only for it, so the refs cases keep their
+      pinned reference counts) rather than a self-contained one: binding it needs Core's reference
+      resolved, so the misc-files state a freshly opened document is first bound against
+      cannot report it. That is what makes the re-pull-after-load requirement testable —
+      a first-response-only `diag` returns nothing and the case fails. Nothing builds App,
+      so an uncompilable App costs the gate nothing.
 
 Commands:
 
-- [ ] `csx def <file>:<line>:<col>` — also accepts `Namespace.Type.Member`. Symbol resolution and
-      the position parser already exist in `Program.LocateAsync`.
-- [ ] `csx diag [path] [--errors-only]`. The server implements `textDocument/diagnostic` and
-      `workspace/diagnostic` but does **not** advertise `diagnosticProvider` in its initialize
-      result — it registers dynamically via `client/registerCapability`, which
-      `LspClient.Endpoints` currently accepts and discards. Either record the registration or
-      call the endpoint optimistically. The registration payload is in hand: identifiers
-      `DocumentCompilerSemantic`, `DocumentAnalyzerSemantic`, `DocumentAnalyzerSyntax` and
-      `NonLocal`, all `workspaceDiagnostics: false`. Calling optimistically is the cheaper
-      route, and `workspace/textDocumentContent` proved the server answers unadvertised
-      endpoints anyway.
-- [ ] `csx outline <file>` via `textDocument/documentSymbol`.
+- [x] `csx def <file>:<line>:<col>` — also accepts `Namespace.Type.Member`. Renders through the
+      same `Output.WriteLocationsAsync` as `refs`; empty exits 1. **Verified on the wire, since
+      the plan turned on it:** `textDocument/definition` fired *at* a declaration returns that
+      declaration (count 1), not empty, so the symbol form is safe and keeps its server round
+      trip. The server also honours the absent `definition.linkSupport` and answers
+      `Location[]`, not `LocationLink[]` — there is deliberately no two-shape reader, because a
+      deserialization failure beats silently rendering half a response.
+      `def-position-json` asserts `'count': 1` at a position where `refs` returns 2: without
+      that one assertion every `def` case would also pass if `def` were secretly `refs`, since
+      `run.sh` can only assert that a substring *appears*. `def-symbol` cannot be distinguished
+      from printing `LocateAsync`'s own answer by any external assertion — the two are
+      identical by construction — so it is regression coverage, not endpoint coverage.
+- [x] `csx diag [path] [--errors-only]`. Calls `textDocument/diagnostic` optimistically; the
+      dynamic `client/registerCapability` is still accepted and discarded. `workspace/diagnostic`
+      was tried and dropped: the server answers it but returns **zero reports**, matching the
+      `workspaceDiagnostics: false` in that registration, and the call is specified as a long
+      poll, so attempting it only bought a timeout. With no argument, `diag` walks the `.cs`
+      files under `--root` instead (`Program.SourceFiles`, shared with the sentinel inference).
+      Exit code is 0 whenever the query was answered — a clean file is a successful `diag`.
+- [x] `csx outline <file | symbol>` via `textDocument/documentSymbol`. Hierarchical: the client
+      declares `hierarchicalDocumentSymbolSupport`, and that capability's property name has to
+      serialise to `textDocument.documentSymbol` or the server quietly falls back to the flat
+      `SymbolInformation[]` form. Output is the one documented exception to DESIGN.md's output
+      rules — see the note there. Exits 0 for a document with no symbols (an answered query,
+      like `diag`); a target that fails to resolve exits 1 from the resolver.
+      Targeting: a file path, a `file:line:col` spec, or a symbol whose declaring document is
+      outlined. Anything file-shaped (containing a separator or ending `.cs`) resolves as a
+      file and never falls through to the symbol resolver, which would otherwise answer a
+      mistyped path with "no symbol matched 'Core/Missing.cs'" and a candidate dump. Overloads
+      are collapsed by document first: several matches in one file are not ambiguity for
+      `outline`, only differing documents are. `fixture/Core/Split.cs` carries both halves of
+      that distinction — an overloaded `Left` in one document, and a `partial class Split`
+      whose second half lives in `Split.More.cs` — so `outline-overloads-collapse` and
+      `outline-ambiguous-fails` pin each direction. `Core/Empty.cs` declares nothing and pins
+      the exit-0-on-no-symbols path.
+      `outline-generated` targets `…BuildInfo.Stamp`, not the type: every case pinning
+      `Program.Matches` is member-level, and what Roslyn puts in `containerName` for a *type*
+      has never been verified, so a type-level target would have bet the case on an unknown.
 
-Also: the first document opened only reports errors that need no loaded project (a missing
-semicolon, say). Re-pull after load settles rather than trusting the first response, and add a
-probe case pinning that.
+Done: the first document opened only reports errors that need no loaded project (a missing
+semicolon, say), and waiting on readiness does not help because the document is opened after it.
+`LspClient.DiagnosticsAsync` re-pulls until two consecutive reports agree, with a 5 s budget;
+`deliberate-error-diag` is the case that pins it, via the cross-project error above.
 
-- [ ] Expand `cases.jsonl` to cover the two remaining fixture cases. The generator has three:
-      `source-generated-refs-symbol`, `-position` and `-json`. The symbol and position forms are
-      kept separate on purpose — `LocateAsync`'s position branch never touches the server, so a
-      single case would pass with `workspace/symbol` coverage of generated symbols entirely
-      broken.
+- [x] Expand `cases.jsonl` to cover `def` and `outline` — 29 cases now. `outline-truncates`
+      pins `--max`, the only genuinely new capping logic in this milestone;
+      `def-no-definition-fails` pins the empty-result exit 1, which is the one failure path
+      `def` actually added (a symbol that does not exist was already pinned by
+      `unknown-symbol-fails`). Note that `|` is both the `expect` separator and `outline`'s
+      gutter, so no case can quote a rendered outline row — see the header in `run.sh`.
+- [x] Expand `cases.jsonl` to cover the remaining fixture case (the deliberate type error).
+      `deliberate-error-diag`, `-diag-json` and `-diag-workspace`; the last one covers the
+      no-argument file walk, which no path-taking case would reach. The
+      symbol and position forms are kept separate on purpose — `LocateAsync`'s position branch
+      never touches the server, so a single case would pass with `workspace/symbol` coverage of
+      generated symbols entirely broken.
 
 ## Milestone 3 — daemon and skill
 
@@ -82,6 +135,13 @@ probe case pinning that.
 - [ ] Consider `--daemonKeepAlive` / `ROSLYN_LANGUAGE_SERVER_DAEMON_KEEPALIVE`; default is 900 s,
       `-1` keeps it alive indefinitely.
 - [ ] Re-measure latency warm and update the README table.
+- [ ] **Source-generator staleness**, carried over from Milestone 2 and only reachable here.
+      With one server outliving an edit: query `Fixture.Core.Generated.BuildInfo.Stamp`, rename
+      `Greeter` (the syntax provider the generator keys on), re-query, and assert the generated
+      symbol goes away — then restore and assert it comes back. Roslyn drives this through
+      `workspace/_roslyn_refreshSourceGenerators`, which today has a stub handler that answers
+      and discards; a daemon has to actually invalidate on it. This is the one Milestone 2
+      fixture bullet whose note outran its checkbox.
 - [ ] Write `skill/SKILL.md`.
 
 `SKILL.md` conventions: YAML frontmatter with `name` and `description`, where the description is
@@ -102,8 +162,10 @@ agent to run `csx ready` once at session start.
 - [x] Zero non-Microsoft C#-specific dependencies in the query path
 - [x] `csx refs` on a cross-project symbol returns correct `file:line` plus context
 - [x] `csx refs` on a source-generated symbol resolves
-- [ ] Column positions correct on the non-ASCII fixture line
-- [ ] `csx diag` finds the deliberate error and does *not* report it before load completes
+- [x] Column positions correct on the non-ASCII fixture line
+- [x] `csx diag` finds the deliberate error and does *not* report it before load completes
+- [x] `csx def` resolves from a use, a symbol and a source-generated symbol
+- [x] `csx outline` renders a nested document outline, including a generated document
 - [x] Probe suite fails loudly when the server returns empty due to premature querying
 - [x] `bump.yml` opens a PR that is gated (see the `probes` commit status caveat in the README)
 - [ ] Two concurrent clients work; daemon survives killing client 1's process tree
@@ -126,6 +188,15 @@ against nuget.org and the shipped binary on 2026-09-02/03.
 - `workspace/projectInitializationComplete` is a real server→client notification and is the
   readiness signal.
 - Roslyn's `containerName` is localised display text, not a namespace path.
+- Pull diagnostics: `textDocument/diagnostic` answers unadvertised, returning
+  `kind: "full"` reports. `workspace/diagnostic` also answers but returns zero reports —
+  `workspaceDiagnostics: false` in its dynamic registration is honest. Roslyn leaves
+  `source` null on compiler diagnostics and sends `code` as a string (`"CS0029"`).
+- `textDocument/definition` answers `Location[]` when the client omits
+  `definition.linkSupport`, and returns the declaration itself when fired at a declaration
+  rather than falling through to implementations. `textDocument/documentSymbol` returns the
+  nested `DocumentSymbol[]` form when `hierarchicalDocumentSymbolSupport` is declared, with
+  the namespace as the root node and `detail` duplicating `name`.
 - Source-generated documents use the `roslyn-source-generated:` scheme. `workspace/symbol`,
   `textDocument/definition`, `textDocument/references` and `textDocument/documentSymbol` all
   cover them. `workspace/textDocumentContent` (LSP 3.18) returns the text and needs no declared

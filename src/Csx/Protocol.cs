@@ -42,6 +42,21 @@ internal sealed record ReferenceParams(
     Position Position,
     ReferenceContext Context);
 
+internal sealed record TextDocumentPositionParams(TextDocumentIdentifier TextDocument, Position Position);
+
+internal sealed record DocumentSymbolParams(TextDocumentIdentifier TextDocument);
+
+// Hierarchical form. The flat SymbolInformation[] fallback is what the server sends when
+// hierarchicalDocumentSymbolSupport is missing or misspelled in the client capabilities, and
+// it does not deserialize into this shape -- a loud failure, which is the point.
+internal sealed record DocumentSymbol(
+    string Name,
+    string? Detail,
+    int Kind,
+    Range Range,
+    Range SelectionRange,
+    DocumentSymbol[]? Children);
+
 internal sealed record WorkspaceSymbolParams(string Query);
 
 // LSP 3.18. The server implements this but never advertises a textDocumentContentProvider
@@ -67,9 +82,16 @@ internal sealed record SynchronizationCapabilities(bool DynamicRegistration);
 
 internal sealed record DiagnosticCapabilities(bool DynamicRegistration, bool RelatedDocumentSupport);
 
+// The property name has to serialise to textDocument.documentSymbol: get it wrong and the
+// server quietly answers with the flat SymbolInformation[] form instead.
+internal sealed record DocumentSymbolCapabilities(
+    bool DynamicRegistration,
+    bool HierarchicalDocumentSymbolSupport);
+
 internal sealed record TextDocumentCapabilities(
     SynchronizationCapabilities Synchronization,
-    DiagnosticCapabilities Diagnostic);
+    DiagnosticCapabilities Diagnostic,
+    DocumentSymbolCapabilities DocumentSymbol);
 
 internal sealed record SymbolCapabilities(bool DynamicRegistration);
 
@@ -101,3 +123,20 @@ internal sealed record InitializeResult(ServerCapabilities Capabilities);
 internal sealed record ConfigurationItem(string? ScopeUri, string? Section);
 
 internal sealed record ConfigurationParams(ConfigurationItem[] Items);
+
+// Pull diagnostics (LSP 3.17). The server advertises no diagnosticProvider in its
+// initialize result -- it registers dynamically via client/registerCapability, which we
+// accept and discard, so the endpoint is called optimistically. Only the per-document one:
+// workspace/diagnostic exists and answers, but returns zero reports, matching the
+// workspaceDiagnostics: false in that registration. Whole-workspace mode walks the files.
+internal sealed record DocumentDiagnosticParams(TextDocumentIdentifier TextDocument);
+
+internal sealed record DocumentDiagnosticReport(string? Kind, string? ResultId, Diagnostic[]? Items);
+
+// Code is string-or-int per the spec, and severity is absent for "as the client sees fit".
+internal sealed record Diagnostic(
+    Range Range,
+    int? Severity,
+    JsonElement Code,
+    string? Source,
+    string Message);
