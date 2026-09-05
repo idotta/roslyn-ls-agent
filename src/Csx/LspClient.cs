@@ -15,13 +15,14 @@ internal sealed class LspClient : IAsyncDisposable
     private readonly Dictionary<string, string[]> _lines = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly TimeSpan SettleBudget = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan BindBudget = TimeSpan.FromSeconds(10);
 
     public string Root { get; }
 
     private LspClient(string root, Process proc, JsonRpc rpc, Endpoints endpoints, StringBuilder stderr)
         => (Root, _proc, _rpc, _endpoints, _stderr) = (root, proc, rpc, endpoints, stderr);
 
-    public static async Task<LspClient> StartAsync(string root, string logLevel, CancellationToken ct)
+    public static async Task<LspClient> StartAsync(string root, string logLevel, bool daemon, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(ServerArgs.Command)
         {
@@ -31,7 +32,8 @@ internal sealed class LspClient : IAsyncDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        foreach (var a in ServerArgs.Stdio(logLevel)) psi.ArgumentList.Add(a);
+        var args = daemon ? ServerArgs.Daemon(logLevel) : ServerArgs.Stdio(logLevel);
+        foreach (var a in args) psi.ArgumentList.Add(a);
 
         // Roslyn localises the display strings it puts in LSP responses. Pin English so
         // output is the same for an agent regardless of the developer's machine locale.
@@ -53,7 +55,21 @@ internal sealed class LspClient : IAsyncDisposable
         rpc.StartListening();
 
         var client = new LspClient(root, proc, rpc, endpoints, stderr);
-        await client.InitializeAsync(ct);
+        try
+        {
+            await client.InitializeAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The thin client can die before it answers initialize — a daemon that never came
+            // up, for one — and StreamJsonRpc then reports nothing but a lost connection. Give
+            // the process a moment to finish exiting so its stderr, the only thing that says
+            // why, is flushed before we quote it.
+            await Task.WhenAny(proc.WaitForExitAsync(ct), Task.Delay(1000, ct));
+            throw new CsxException(
+                $"the language server closed the connection during initialize: {ex.Message}{client.StderrTail()}");
+        }
+
         return client;
     }
 
@@ -90,20 +106,17 @@ internal sealed class LspClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Project load is async, and a query fired too early returns empty results rather than
-    /// an error. Waits for the load notification, then keeps polling the sentinel until it
-    /// actually resolves: a warm daemon fired the notification before we connected, and the
-    /// notification on its own does not mean indexing has finished.
+    /// A query fired before the workspace loads returns an empty result, not an error, so
+    /// readiness has to be established rather than assumed. Polls the sentinel from the
+    /// start: a client attaching to an already-loaded daemon never sees
+    /// <c>projectInitializationComplete</c> — it fired before this process existed — so
+    /// waiting on the notification first burned the entire timeout on a workspace that was
+    /// ready before we connected. The notification is kept only as diagnostic detail on the
+    /// failure path.
     /// </summary>
     public async Task WaitReadyAsync(string sentinel, TimeSpan timeout, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + timeout;
-
-        var remaining = deadline - DateTime.UtcNow;
-        if (remaining > TimeSpan.Zero)
-        {
-            await Task.WhenAny(_endpoints.ProjectInitialized, Task.Delay(remaining, ct));
-        }
 
         while (DateTime.UtcNow < deadline)
         {
@@ -127,11 +140,11 @@ internal sealed class LspClient : IAsyncDisposable
     public async Task<IReadOnlyList<Location>> ReferencesAsync(string uri, Position position, CancellationToken ct)
     {
         await OpenAsync(uri, ct);
-        var result = await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
-            "textDocument/references",
-            new ReferenceParams(new TextDocumentIdentifier(uri), position, new ReferenceContext(true)),
-            ct);
-        return result ?? [];
+        return await SettleAsync(async () =>
+            await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
+                "textDocument/references",
+                new ReferenceParams(new TextDocumentIdentifier(uri), position, new ReferenceContext(true)),
+                ct) ?? [], ct);
     }
 
     /// <summary>
@@ -143,12 +156,35 @@ internal sealed class LspClient : IAsyncDisposable
     public async Task<IReadOnlyList<Location>> DefinitionAsync(string uri, Position position, CancellationToken ct)
     {
         await OpenAsync(uri, ct);
-        var result = await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
-            "textDocument/definition",
-            new TextDocumentPositionParams(new TextDocumentIdentifier(uri), position),
-            ct);
-        return result ?? [];
+        return await SettleAsync(async () =>
+            await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
+                "textDocument/definition",
+                new TextDocumentPositionParams(new TextDocumentIdentifier(uri), position),
+                ct) ?? [], ct);
     }
+
+    /// <summary>
+    /// Re-asks while the answer is decompiled metadata. Roslyn binds a <c>ProjectReference</c>
+    /// to the referenced project's built assembly until that project is loaded into the
+    /// workspace, so a query fired in the window between the sentinel resolving and the last
+    /// project loading comes back pointing at a temp file under <c>MetadataAsSource</c> —
+    /// a confident wrong answer, exit 0, no relation to the repo. The daemon is what made that
+    /// window reachable: readiness used to cost a full cold load, which closed it by accident.
+    /// A symbol that really does come from an assembly costs this budget once and then answers.
+    /// </summary>
+    private async Task<IReadOnlyList<Location>> SettleAsync(
+        Func<Task<IReadOnlyList<Location>>> query, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + BindBudget;
+        while (true)
+        {
+            var locations = await query();
+            if (locations.Count == 0 || !locations.Any(l => PathUri.IsDecompiled(l.Uri))) return locations;
+            if (DateTime.UtcNow >= deadline) return locations;
+            await Task.Delay(250, ct);
+        }
+    }
+
 
     public async Task<IReadOnlyList<DocumentSymbol>> DocumentSymbolsAsync(string uri, CancellationToken ct)
     {
@@ -240,6 +276,29 @@ internal sealed class LspClient : IAsyncDisposable
         _lines[uri] = lines;
         return lines;
     }
+
+    /// <summary>
+    /// Whether the thin client gave up on the daemon and started its own server. It does that
+    /// silently — a fallback run answers correctly, just cold, and these two lines on stderr
+    /// are the only difference — so an agent would otherwise blame the latency on us. Read
+    /// after the command has run, not right after connecting: the marker is written while the
+    /// pipe is being established, which races the initialize response.
+    /// </summary>
+    public bool DaemonFallback
+    {
+        get
+        {
+            string text;
+            lock (_stderr) { text = _stderr.ToString(); }
+            return DaemonFallbackMarkers.Any(m => text.Contains(m, StringComparison.Ordinal));
+        }
+    }
+
+    private static readonly string[] DaemonFallbackMarkers =
+    [
+        "Falling back to non-daemon mode",
+        "non-daemon fallback mode",
+    ];
 
     public string StderrTail(int lines = 12)
     {

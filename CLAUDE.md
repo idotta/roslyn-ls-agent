@@ -68,7 +68,53 @@ dotnet build src/Csx/Csx.csproj          # build
   shut down`. Payloads are hand-rolled in `Protocol.cs`, so a shape mistake is silent and
   then fatal rather than a clean error.
 - **The server does not restore your projects.** `dotnet restore` before starting it.
-
+- **The daemon is the default, and it changes what "ready" means.** `csx` connects to the
+  shared multi-client daemon unless `--no-daemon` is passed. One daemon serves every
+  workspace on the machine, keyed by user and server path rather than by root, and it outlives
+  the client that started it. Two consequences bit already:
+  - **`workspace/projectInitializationComplete` never fires for a client that attaches to a
+    loaded daemon** — it fired before the process existed. `WaitReadyAsync` must poll the
+    sentinel from the start and treat the notification as diagnostic only. Blocking on it
+    first made every warm run burn its entire timeout, 300 s under `run.sh`, and looked
+    exactly like a slow cold load.
+  - **The sentinel resolving no longer implies every project is loaded.** Cold load used to
+    close that window by accident, costing a minute; warm attach reaches it in seconds. Until
+    a project is loaded, Roslyn binds a `ProjectReference` to the referenced project's *built
+    assembly*, so `definition` answers with a decompiled temp file under `MetadataAsSource` —
+    exit 0, no context lines, no relation to the repo. `PathUri.IsDecompiled` spots it and
+    `LspClient.SettleAsync` re-asks for up to 10 s. It surfaced as `def-non-ascii-json`
+    failing once in a run where every other case passed, so treat a lone flake here as this,
+    not as noise.
+- **`probes/run.sh` must scope its own daemon.** It exports
+  `ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME=csx-probe-$$` and a 60 s keepalive. Without it the
+  gate inherits whatever daemon the developer's session left running — a stale workspace can
+  make the suite lie — and the opening `csx ready` stops being a cold load.
+- **The staleness legs write to the fixture.** They rename `Greeter` in
+  `fixture/Core/Greeter.cs` and rely on a `trap ... EXIT` to put it back. If `run.sh` is
+  interrupted between the rename and the trap, check `git diff fixture/` before believing
+  anything else the suite says.
+- **A failure during `initialize` must never escape as a StreamJsonRpc exception.** The thin
+  client can die before it answers, and StreamJsonRpc then reports nothing but
+  `ConnectionLostException` — the server's stderr is the only thing that says why, and it is
+  discarded unless the failure is wrapped in a `CsxException` carrying `StderrTail()`. That
+  wrapping is what turned "connection lost" into the exact mutex name and `file:line`
+  below.
+- **To force the silent non-daemon fallback**, hold a mutex named `Global\<pipeName>.client`
+  while a client starts — the thin client falls back after about 20 s of waiting for it.
+  `probes/hold-mutex.cs` does this and `non-daemon-fallback-reported` is the case. Two traps,
+  both of which look like the mechanism not working rather than like a mistake: the mutex must
+  be created with `CurrentUserOnly = true` to match the server, and with
+  `CurrentSessionOnly = false` or .NET rejects the `Global\` prefix. Either one wrong throws
+  `WaitHandleCannotBeOpenedException` / `ArgumentException` instead of contending, so the
+  client connects normally and the case fails for a reason that has nothing to do with `csx`.
+  It also needs its own pipe name: the mutex only guards check-server-then-launch, so a client
+  that finds a daemon already listening never contends for it. It is the second
+  host-dependent case in the suite after the non-ASCII ones — .NET implements named mutexes
+  over files on Linux — but it **passed on `ubuntu-latest`** in PR #5, so the file-backed
+  implementation contends the same way.
+- **`probes/hold-mutex.cs` is a .NET 10 file-based app, not a project, and that is deliberate.**
+  `dotnet run probes/hold-mutex.cs` compiles a bare `.cs` in under a second with no `.csproj`.
+  Reach for that before adding a project to the tree for a probe.
 ## C# and .NET rules
 
 This repo is .NET 10 / C# 14: a CLI and a thin LSP client, no UI, no web host, no DI container.
@@ -96,6 +142,12 @@ This repo is .NET 10 / C# 14: a CLI and a thin LSP client, no UI, no web host, n
 - `probes/run.sh` parses `cases.jsonl` with `sed` alone. **No `jq`** — it does not exist in Git
   Bash on the dev machine. (`python` does, 3.14.6, despite what this file used to claim; the
   `sed`-only rule still stands for the GitHub runner.) Keep `cases.jsonl` to four flat string fields.
+- **A backslash immediately before `$` in a double-quoted bash string escapes the dollar.**
+  `"Global\${pipe}.client"` yields a literal `${pipe}`, not the expansion; `\\` is what
+  produces the intended `Global\<pipe>.client`. It cost a probe run:
+  `probes/hold-mutex.cs` held a mutex nothing contended for and the fallback case failed with
+  no hint of why. The mutex name is now built in C#, where a backslash needs no escape at all,
+  and `run.sh` passes only the pipe name.
 - `probes/run.sh` must stay mode `100755` in the index. Windows Git has `core.filemode=false`, so
   `chmod +x` does not register; use `git update-index --chmod=+x` if it ever reverts.
 - Adding a NuGet package for LSP types is a regression, not a cleanup. See the README.
