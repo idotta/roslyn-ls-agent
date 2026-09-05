@@ -142,11 +142,12 @@ This repo is .NET 10 / C# 14: a CLI and a thin LSP client, no UI, no web host, n
 - `probes/run.sh` parses `cases.jsonl` with `sed` alone. **No `jq`** — it does not exist in Git
   Bash on the dev machine. (`python` does, 3.14.6, despite what this file used to claim; the
   `sed`-only rule still stands for the GitHub runner.) Keep `cases.jsonl` to four flat string fields.
-- **A backslash next to a variable in a double-quoted bash string is a trap.**
-  `"Global\\${pipe}.client"` yields a literal `${pipe}`, not the expansion, in Git Bash. It
-  cost a probe run: `probes/hold-mutex.cs` held a mutex nothing contended for and the fallback
-  case failed with no hint of why. The mutex name is now built in C#, where a backslash is
-  unambiguous, and `run.sh` passes only the pipe name.
+- **A backslash immediately before `$` in a double-quoted bash string escapes the dollar.**
+  `"Global\${pipe}.client"` yields a literal `${pipe}`, not the expansion; `\\` is what
+  produces the intended `Global\<pipe>.client`. It cost a probe run:
+  `probes/hold-mutex.cs` held a mutex nothing contended for and the fallback case failed with
+  no hint of why. The mutex name is now built in C#, where a backslash needs no escape at all,
+  and `run.sh` passes only the pipe name.
 - `probes/run.sh` must stay mode `100755` in the index. Windows Git has `core.filemode=false`, so
   `chmod +x` does not register; use `git update-index --chmod=+x` if it ever reverts.
 - Adding a NuGet package for LSP types is a regression, not a cleanup. See the README.

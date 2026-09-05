@@ -11,7 +11,7 @@ Two constraints drive the design:
 1. **Official tooling only.** The C#-specific component in the query path is Microsoft-published.
 2. **Always current.** A weekly cron bumps the pin and a probe suite gates the bump.
 
-Status: **Milestone 3 done** bar one probe — `csx ready`, `csx refs`, `csx def`,
+Status: **Milestone 3 done** — `csx ready`, `csx refs`, `csx def`,
 `csx outline` and `csx diag`, cross-project fixture, probe gate, both workflows, the
 source-generator, non-ASCII and deliberate-error fixture cases, the shared server daemon on by
 default, source-generator staleness pinned, and `skill/SKILL.md`. `impl` / `sym` are
@@ -230,7 +230,8 @@ weekly bump.
 ```
 
 Restores the tool and the fixture, builds `csx`, asserts readiness, then runs every case in
-`probes/cases.jsonl`. Exits non-zero on any mismatch. Twenty-nine cases today, including a
+`probes/cases.jsonl`. Exits non-zero on any mismatch. Thirty-four cases today — thirty rows,
+three source-generator staleness legs and the forced non-daemon fallback — including a
 negative one that pins a query fired before load to a loud failure rather than an empty result.
 
 `cases.jsonl` is one flat JSON object per line with four string fields so `run.sh` can parse it

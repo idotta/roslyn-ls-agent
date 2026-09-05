@@ -185,8 +185,9 @@ staleness is already reachable without any client work.
       like a mistake: the mutex must be created with `CurrentUserOnly = true` to match the
       server, and with `CurrentSessionOnly = false` or the `Global\` prefix is rejected. Either
       one wrong throws instead of contending, and so does passing the whole mutex name from
-      the shell: `"Global\\${pipe}.client"` in a double-quoted bash string yields a literal
-      `${pipe}`, so the holder guards a name nothing contends for and the case fails silently.
+      the shell: a backslash immediately before `$` in a double-quoted string escapes the
+      dollar, so `"Global\${pipe}.client"` yields a literal `${pipe}` and the holder guards a
+      name nothing contends for — the case then fails silently.
       `run.sh` passes only the pipe name and the holder builds the rest. This is the second
       host-dependent case in the suite after the non-ASCII ones, since .NET implements named
       mutexes over files on Linux — **verified there on 2026-09-04**, in the `probe` run on

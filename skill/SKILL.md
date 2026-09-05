@@ -42,7 +42,7 @@ A text search cannot tell a call from a comment, and it cannot see a caller in a
 
 ## Targets
 
-Every command takes either form:
+`refs`, `def` and `outline` take either form:
 
 - **A symbol:** `Greet`, `Greeter.Greet`, `Fixture.Core.Greeter.Greet`. Only the last two
   segments are matched — the enclosing type and the member — because Roslyn returns the
@@ -53,6 +53,9 @@ Every command takes either form:
 
 `outline` also takes a bare file path. Anything containing a separator or ending `.cs` is
 treated as a file, never as a symbol.
+
+`diag` is the exception: it takes a **file or directory path, or nothing at all** — never a
+symbol or a position. With no argument it walks every `.cs` file under `--root`.
 
 ## Output
 
