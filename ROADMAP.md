@@ -5,7 +5,7 @@ questions are already settled. `DESIGN.md` holds the why behind the settled ones
 
 Last updated: 2026-09-04, after the daemon became the default, the source-generator
 staleness legs and the forced non-daemon fallback landed in `probes/run.sh`, and
-`skill/SKILL.md` was written. Milestone 3 is done.
+`skill/SKILL.md` was written. Milestone 3 is done: 34 cases pass on both hosts.
 
 ## Status
 
@@ -187,9 +187,10 @@ staleness is already reachable without any client work.
       one wrong throws instead of contending, and so does passing the whole mutex name from
       the shell: `"Global\\${pipe}.client"` in a double-quoted bash string yields a literal
       `${pipe}`, so the holder guards a name nothing contends for and the case fails silently.
-      `run.sh` passes only the pipe name and the holder builds the rest. **Unverified on Linux** — .NET implements named
-      mutexes over files there, and both workflows run `ubuntu-latest`, so this is the second
-      host-dependent case in the suite after the non-ASCII ones.
+      `run.sh` passes only the pipe name and the holder builds the rest. This is the second
+      host-dependent case in the suite after the non-ASCII ones, since .NET implements named
+      mutexes over files on Linux — **verified there on 2026-09-04**, in the `probe` run on
+      PR #5, which passed all 34 cases on `ubuntu-latest`.
 - [x] Write `skill/SKILL.md`.
 
 Three client bugs surfaced while measuring, all fixed here:

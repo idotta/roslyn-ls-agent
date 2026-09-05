@@ -108,8 +108,10 @@ dotnet build src/Csx/Csx.csproj          # build
   `WaitHandleCannotBeOpenedException` / `ArgumentException` instead of contending, so the
   client connects normally and the case fails for a reason that has nothing to do with `csx`.
   It also needs its own pipe name: the mutex only guards check-server-then-launch, so a client
-  that finds a daemon already listening never contends for it. **Unverified on Linux**, where
-  .NET implements named mutexes over files — the second host-dependent case in the suite.
+  that finds a daemon already listening never contends for it. It is the second
+  host-dependent case in the suite after the non-ASCII ones — .NET implements named mutexes
+  over files on Linux — but it **passed on `ubuntu-latest`** in PR #5, so the file-backed
+  implementation contends the same way.
 - **`probes/hold-mutex.cs` is a .NET 10 file-based app, not a project, and that is deliberate.**
   `dotnet run probes/hold-mutex.cs` compiles a bare `.cs` in under a second with no `.csproj`.
   Reach for that before adding a project to the tree for a probe.
