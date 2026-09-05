@@ -28,3 +28,13 @@
 {"name":"outline-overloads-collapse","args":"outline Left --root fixture","exit":"0","expect":"Core/Split.cs|public static string Left()|public static string Left(string tag)"}
 {"name":"outline-empty-document","args":"outline Core/Empty.cs --root fixture","exit":"0","expect":"Core/Empty.cs|no symbols"}
 {"name":"no-daemon-refs","args":"refs Fixture.Core.Greeter.Greet --root fixture --no-daemon","exit":"0","expect":"Core/Greeter.cs:5|App/Program.cs:9"}
+{"name":"impl-interface-member","args":"impl Fixture.Core.IShape.Area --root fixture","exit":"0","expect":"App/Square.cs:12|Core/Shape.cs:16|public int Area() => side * side;"}
+{"name":"impl-interface-type","args":"impl Core/Shape.cs:9:18 --root fixture","exit":"0","expect":"App/Square.cs:10|Core/Shape.cs:14|public sealed class Unit : IShape"}
+{"name":"impl-json","args":"impl Fixture.Core.IShape.Area --root fixture --json","exit":"0","expect":"'count': 2|'path': 'App/Square.cs'|'line': 12|'column': 16"}
+{"name":"impl-falls-through-to-declaration","args":"impl Fixture.Core.Greeter.Greet --root fixture --json","exit":"0","expect":"'count': 1|'path': 'Core/Greeter.cs'|'line': 5"}
+{"name":"impl-no-symbol-fails","args":"impl App/Program.cs:12:1 --root fixture","exit":"1","expect":"no results"}
+{"name":"sym-query","args":"sym Area --root fixture","exit":"0","expect":"App/Square.cs:12:16|Core/Shape.cs:11:9|Core/Shape.cs:16:16"}
+{"name":"sym-json","args":"sym Area --root fixture --json","exit":"0","expect":"'count': 3|'name': 'Area'|'kind': 'method'|'path': 'Core/Shape.cs'|'column': 9"}
+{"name":"sym-generated","args":"sym BuildInfo --root fixture --json","exit":"0","expect":"'name': 'BuildInfo'|'path': '<generated>/Gen/BuildInfo.g.cs'|'generated': true"}
+{"name":"sym-truncates","args":"sym Area --root fixture --max 2","exit":"0","expect":"App/Square.cs:12:16|... 1 more (use --max 3 to see all)"}
+{"name":"sym-no-match-fails","args":"sym NoSuchThing --root fixture","exit":"1","expect":"no results"}

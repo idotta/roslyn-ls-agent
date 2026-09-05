@@ -11,6 +11,8 @@ internal static partial class Program
           csx ready   [--sentinel <symbol>]
           csx refs    <symbol | file:line:col> [--max N] [--context N]
           csx def     <symbol | file:line:col> [--max N] [--context N]
+          csx impl    <symbol | file:line:col> [--max N] [--context N]
+          csx sym     <query> [--max N]
           csx outline <file | symbol> [--max N]
           csx diag    [path] [--errors-only] [--max N] [--context N]
 
@@ -18,7 +20,7 @@ internal static partial class Program
           --root <dir>      workspace root (default: current directory)
           --sentinel <sym>  readiness probe symbol (default: inferred from the workspace)
           --max N           cap results (default: 50)
-          --context N       source lines either side of a hit (default: 1; unused by outline)
+          --context N       source lines either side of a hit (default: 1; unused by outline, sym)
           --timeout N       seconds to wait for workspace load (default: 180)
           --log-level L     server log level (default: Warning)
           --errors-only     diag: drop warnings and below
@@ -85,6 +87,12 @@ internal static partial class Program
             case "def":
                 return await DefAsync(client, opts, ct);
 
+            case "impl":
+                return await ImplAsync(client, opts, ct);
+
+            case "sym":
+                return await SymAsync(client, opts, ct);
+
             case "outline":
                 return await OutlineAsync(client, opts, ct);
 
@@ -123,6 +131,43 @@ internal static partial class Program
         await Output.WriteLocationsAsync(
             opts.Root, locations, opts.Max, opts.Context, opts.Json, u => client.LinesAsync(u, ct));
         return locations.Count == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Roslyn does not answer empty for a member that has no implementations — it falls
+    /// through to the declaration, exactly as <c>definition</c> does when fired at one. So
+    /// <c>impl</c> on an ordinary method is <c>def</c>, and the empty result this exits 1 on
+    /// means the position resolved to no symbol at all, not that nothing implements the
+    /// symbol. Verified on the wire against 5.12.0-1.26426.8.
+    /// </summary>
+    private static async Task<int> ImplAsync(LspClient client, Options opts, CancellationToken ct)
+    {
+        var target = opts.Argument ?? throw new CsxException("impl needs a symbol or file:line:col");
+
+        await client.WaitReadyAsync(opts.Sentinel ?? InferSentinel(opts.Root), opts.Timeout, ct);
+
+        var (uri, position) = await LocateAsync(client, opts.Root, target, ct);
+        var locations = await client.ImplementationsAsync(uri, position, ct);
+        await Output.WriteLocationsAsync(
+            opts.Root, locations, opts.Max, opts.Context, opts.Json, u => client.LinesAsync(u, ct));
+        return locations.Count == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// A search, so the query goes to the server as written and every answer is a result:
+    /// no dotted narrowing, no ambiguity error, no candidate dump — several matches are
+    /// the point rather than a problem. Empty exits 1, like <c>refs</c>: a search that found
+    /// nothing is a lookup that failed.
+    /// </summary>
+    private static async Task<int> SymAsync(LspClient client, Options opts, CancellationToken ct)
+    {
+        var query = opts.Argument ?? throw new CsxException("sym needs a query");
+
+        await client.WaitReadyAsync(opts.Sentinel ?? InferSentinel(opts.Root), opts.Timeout, ct);
+
+        var (_, matches) = await QuerySymbolsAsync(client, query, Distinct, ct);
+        Output.WriteSymbols(opts.Root, matches, opts.Max, opts.Json);
+        return matches.Count == 0 ? 1 : 0;
     }
 
     /// <summary>
@@ -263,22 +308,8 @@ internal static partial class Program
     private static async Task<List<SymbolInformation>> MatchSymbolsAsync(
         LspClient client, string target, CancellationToken ct)
     {
-        // The sentinel proves the workspace loaded, not that every project did. Give the
-        // target a short grace period before calling it absent.
-        var grace = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        IReadOnlyList<SymbolInformation> candidates;
-        List<SymbolInformation> matches;
-        while (true)
-        {
-            candidates = await client.SymbolsAsync(LastSegment(target), ct);
-            matches = candidates
-                .Where(s => Matches(s, target))
-                .DistinctBy(s => (s.Location.Uri, s.Location.Range.Start.Line, s.Location.Range.Start.Character))
-                .ToList();
-
-            if (matches.Count > 0 || DateTime.UtcNow >= grace) break;
-            await Task.Delay(250, ct);
-        }
+        var (candidates, matches) = await QuerySymbolsAsync(
+            client, LastSegment(target), c => Distinct(c.Where(s => Matches(s, target))), ct);
 
         if (matches.Count == 0)
         {
@@ -290,6 +321,39 @@ internal static partial class Program
 
         return matches;
     }
+
+    /// <summary>
+    /// One <c>workspace/symbol</c> query, retried while <paramref name="select"/> picks
+    /// nothing out of the answer. The sentinel proves the workspace loaded, not that every
+    /// project did, so a query fired in that window comes back missing the symbols of a
+    /// project still loading — indistinguishable from a target that is genuinely absent.
+    /// Retrying on the selection rather than on the raw answer matters: a query for a name
+    /// declared in two projects returns the loaded one's symbols immediately, so waiting for
+    /// a non-empty answer would stop waiting before the one actually being asked for arrives.
+    /// The whole answer comes back too, because the failure message lists it as candidates.
+    /// </summary>
+    private static async Task<(IReadOnlyList<SymbolInformation> Candidates, List<SymbolInformation> Selected)>
+        QuerySymbolsAsync(
+            LspClient client,
+            string query,
+            Func<IReadOnlyList<SymbolInformation>, List<SymbolInformation>> select,
+            CancellationToken ct)
+    {
+        var grace = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (true)
+        {
+            var candidates = await client.SymbolsAsync(query, ct);
+            var selected = select(candidates);
+            if (selected.Count > 0 || DateTime.UtcNow >= grace) return (candidates, selected);
+            await Task.Delay(250, ct);
+        }
+    }
+
+    // Roslyn reports a symbol once per project that sees it, so a symbol in a multi-targeted
+    // or referenced project arrives several times at one location.
+    private static List<SymbolInformation> Distinct(IEnumerable<SymbolInformation> symbols) => symbols
+        .DistinctBy(s => (s.Location.Uri, s.Location.Range.Start.Line, s.Location.Range.Start.Character))
+        .ToList();
 
     /// <summary>
     /// Roslyn returns containerName as a localised display string ("in Greeter (project

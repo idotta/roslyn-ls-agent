@@ -36,6 +36,16 @@ always a prefix and no node outlives its parent) and the same `{ count, truncate
 JSON envelope, with `path` and `generated` on the envelope because the whole document is one
 URI.
 
+**`sym` breaks one narrower rule.** It prints no source line and no `>` marker, and
+`--context` is inert for it: a search result set is a list of places to go, not a place to
+read, and padding every hit of a broad query with context is the exact cost the cap exists to
+prevent. Everything else holds — root-relative `path:line:col` on every row, one-based, `--max`,
+the same `{ count, truncated, results }` envelope — so this is a smaller exception than
+`outline`'s, which also drops the per-row path. Rows carry Roslyn's `containerName` because it
+is the only thing separating two symbols that share a name; it is localised display text, so
+nothing asserts on it. No `|` appears in a row, unlike an outline's gutter, so a probe case can
+quote one whole.
+
 Source-generated locations are labelled `<generated>/<assemblyName>/<hintName>`, built only
 from the URI fields that are stable across runs and machines. **Known limitation:** none of
 those fields identifies the *consuming* project, so one generator applied to several projects

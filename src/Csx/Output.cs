@@ -179,6 +179,75 @@ internal static class Output
     }
 
     /// <summary>
+    /// A search result set is a list of places to go, not a place to read, so this is the
+    /// renderer that prints no source line and no <c>&gt;</c> marker: <c>--context</c> is
+    /// inert for it. Everything else in DESIGN.md's output rules still holds — root-relative
+    /// path, one-based line and column, capped by <paramref name="max"/>, the same JSON
+    /// envelope. No <c>|</c> appears in a row, unlike an outline's gutter, so a probe case
+    /// can quote one whole. containerName is Roslyn's localised display text ("in Greeter
+    /// (project Core (net10.0))"), not a namespace path; it is rendered because it is the
+    /// only thing separating two symbols that share a name, and never asserted on, because
+    /// DOTNET_CLI_UI_LANGUAGE pins its language but nothing pins its shape.
+    /// </summary>
+    public static void WriteSymbols(
+        string root, IReadOnlyList<SymbolInformation> symbols, int max, bool json)
+    {
+        var hits = symbols
+            .Select(s => new Match(PathUri.Display(root, s.Location.Uri), s))
+            .OrderBy(h => h.Symbol.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(h => h.Symbol.Location.Range.Start.Line)
+            .ToList();
+
+        var shown = hits.Take(max).ToList();
+
+        if (json)
+        {
+            var payload = shown.Select(h => new
+            {
+                name = h.Symbol.Name,
+                kind = Kind(h.Symbol.Kind),
+                container = h.Symbol.ContainerName,
+                path = h.Display,
+                line = h.Symbol.Location.Range.Start.Line + 1,
+                column = h.Symbol.Location.Range.Start.Character + 1,
+                generated = PathUri.IsGenerated(h.Symbol.Location.Uri),
+            });
+
+            Console.WriteLine(JsonSerializer.Serialize(
+                new { count = hits.Count, truncated = hits.Count > shown.Count, results = payload },
+                JsonOut));
+            return;
+        }
+
+        if (shown.Count == 0)
+        {
+            Console.WriteLine("no results");
+            return;
+        }
+
+        var kindWidth = shown.Max(h => Kind(h.Symbol.Kind).Length);
+        var nameWidth = shown.Max(h => h.Symbol.Name.Length);
+        var containerWidth = shown.Max(h => (h.Symbol.ContainerName ?? string.Empty).Length);
+        foreach (var hit in shown)
+        {
+            var start = hit.Symbol.Location.Range.Start;
+            var row =
+                $"{Kind(hit.Symbol.Kind).PadRight(kindWidth)}  " +
+                $"{hit.Symbol.Name.PadRight(nameWidth)}  " +
+                $"{(hit.Symbol.ContainerName ?? string.Empty).PadRight(containerWidth)}  " +
+                $"{hit.Display}:{start.Line + 1}:{start.Character + 1}";
+            Console.WriteLine(row);
+        }
+
+        if (hits.Count > shown.Count)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"... {hits.Count - shown.Count} more (use --max {hits.Count} to see all)");
+        }
+    }
+
+    /// <summary>
     /// The one command that does not print path:line plus context per row — see DESIGN.md.
     /// An outline is already the summary, so it renders as a tree: the document path once as
     /// a header, then one row per symbol carrying that declaration's own source line,
@@ -337,4 +406,6 @@ internal static class Output
     private sealed record Hit(string Uri, string Display, Range Range);
 
     private sealed record Finding(string Uri, string Display, Diagnostic Diagnostic);
+
+    private sealed record Match(string Display, SymbolInformation Symbol);
 }

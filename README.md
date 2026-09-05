@@ -11,11 +11,11 @@ Two constraints drive the design:
 1. **Official tooling only.** The C#-specific component in the query path is Microsoft-published.
 2. **Always current.** A weekly cron bumps the pin and a probe suite gates the bump.
 
-Status: **Milestone 3 done** — `csx ready`, `csx refs`, `csx def`,
-`csx outline` and `csx diag`, cross-project fixture, probe gate, both workflows, the
-source-generator, non-ASCII and deliberate-error fixture cases, the shared server daemon on by
-default, source-generator staleness pinned, and `skill/SKILL.md`. `impl` / `sym` are
-Milestone 4. See [ROADMAP.md](ROADMAP.md).
+Status: **Milestone 3 done, Milestone 4 in progress** — `csx ready`, `csx refs`, `csx def`,
+`csx impl`, `csx sym`, `csx outline` and `csx diag`, cross-project fixture, probe gate, both
+workflows, the source-generator, non-ASCII and deliberate-error fixture cases, the shared server
+daemon on by default, source-generator staleness pinned, and `skill/SKILL.md`. Milestone 4's
+remaining item is output tuning. See [ROADMAP.md](ROADMAP.md).
 
 ## Use
 
@@ -23,6 +23,8 @@ Milestone 4. See [ROADMAP.md](ROADMAP.md).
 csx ready                                    # block until the workspace has loaded
 csx refs <symbol | file:line:col> [--max N]  # every reference, with context
 csx def <symbol | file:line:col>             # where it is declared
+csx impl <symbol | file:line:col>            # what implements or overrides it
+csx sym <query> [--max N]                    # search the workspace by name
 csx outline <file | symbol> [--max N]        # the declarations in one document
 csx diag [path] [--errors-only]              # compiler and analyzer diagnostics
 ```
@@ -68,6 +70,37 @@ copied out of a `def` result works), or a symbol whose declaring document is out
 last being the only way to reach a source-generated document, which has no path on disk.
 
 ```
+$ csx impl Fixture.Core.IShape.Area --root fixture
+App/Square.cs:12:16
+  11 | {
+> 12 |     public int Area() => side * side;
+  13 | }
+
+Core/Shape.cs:16:16
+  15 | {
+> 16 |     public int Area() => 1;
+  17 | }
+```
+
+`impl` renders exactly like `def`, and on a member with no implementations it *is* `def`:
+Roslyn does not answer empty there, it falls through to the declaration. So an empty `impl`
+result — which exits 1 — means the position resolved to no symbol at all, not that nothing
+implements the symbol.
+
+```
+$ csx sym Area --root fixture
+method  Area  in Square (project App (net10.0))   App/Square.cs:12:16
+method  Area  in IShape (project Core (net10.0))  Core/Shape.cs:11:9
+method  Area  in Unit (project Core (net10.0))    Core/Shape.cs:16:16
+```
+
+`sym` is a search, so the query goes to the server as written and every answer is a result —
+no ambiguity error, no candidate dump. It is the second command that bends the output rules,
+more narrowly than `outline`: it keeps `path:line:col` on every row but prints no source line
+and no `>` marker, so `--context` is inert for it. The container column is Roslyn's localised
+display text, not a namespace path, and is there to separate two symbols that share a name.
+
+```
 $ csx diag App/TypeError.cs --root fixture
 App/TypeError.cs:18:36 error CS0029: Cannot implicitly convert type 'string' to 'int'
   17 | {
@@ -81,13 +114,14 @@ answers that endpoint but returns zero reports, which is what the `workspaceDiag
 in its dynamic registration means.
 
 Options: `--root <dir>` (default: cwd), `--sentinel <symbol>`, `--max N` (default 50),
-`--context N` (default 1), `--timeout N` seconds (default 180), `--log-level L`,
-`--errors-only` (`diag` only), `--json`.
+`--context N` (default 1; inert for `outline` and `sym`), `--timeout N` seconds (default 180),
+`--log-level L`, `--errors-only` (`diag` only), `--json`.
 
 Paths are relative to `--root`; lines and columns are one-based.
 
 `refs` exits 1 with `no results` when a symbol resolves but has no references, and 1 with a
-diagnostic when the symbol does not resolve or the workspace never loaded.
+diagnostic when the symbol does not resolve or the workspace never loaded. `def`, `impl` and
+`sym` follow the same rule.
 
 `diag` exits 0 whenever the query was answered, findings or not — a clean file is a successful
 `diag`, unlike an empty `refs`, which means the lookup failed. It exits 1 only when the workspace
@@ -230,7 +264,7 @@ weekly bump.
 ```
 
 Restores the tool and the fixture, builds `csx`, asserts readiness, then runs every case in
-`probes/cases.jsonl`. Exits non-zero on any mismatch. Thirty-four cases today — thirty rows,
+`probes/cases.jsonl`. Exits non-zero on any mismatch. Forty-four cases today — forty rows,
 three source-generator staleness legs and the forced non-daemon fallback — including a
 negative one that pins a query fired before load to a loud failure rather than an empty result.
 
@@ -255,5 +289,6 @@ fixture/                    deliberately tricky solution
   Core/Party.cs             an astral-plane character on a line carrying a symbol
   Core/Split*.cs            one type in two documents, plus an overload in one of them
   Core/Empty.cs             a compilable document that declares nothing
+  Core/Shape.cs             an interface whose implementers straddle two projects, for `impl`
 probes/                     cases.jsonl + run.sh
 ```
