@@ -3,9 +3,17 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-04, after the daemon became the default, the source-generator
-staleness legs and the forced non-daemon fallback landed in `probes/run.sh`, and
-`skill/SKILL.md` was written. Milestone 3 is done: 34 cases pass on both hosts.
+Last updated: 2026-09-05, after `impl` and `sym` landed with their fixture and ten cases.
+Milestone 3 is done. Milestone 4 has one item left — output tuning — and it is a placeholder
+that names nothing concrete; it needs scope before it can be worked.
+
+44 cases, and they do not all pass on every run: `impl-interface-type` and `sym-truncates`
+fail on a cold load, both by answering with a cross-project hit missing rather than by
+erroring. Both pass against a warm workspace. This is the known window the sentinel does not
+close — it proves the workspace loaded, not that every project did — and neither the
+`SettleAsync` decompilation guard nor `QuerySymbolsAsync`'s retry catches it, because both
+watch for an *empty* answer and this one is merely *incomplete*. Closing it needs per-project
+readiness, which is its own piece of work.
 
 ## Status
 
@@ -14,7 +22,7 @@ staleness legs and the forced non-daemon fallback landed in `probes/run.sh`, and
 | 1 | `ready` + `refs`, cross-project fixture, probe gate, both workflows | **done** |
 | 2 | The hard fixture cases and the read commands | **done** |
 | 3 | Daemon mode, then `skill/SKILL.md` | **done** |
-| 4 | Remaining commands and output tuning | not started |
+| 4 | Remaining commands and output tuning | commands done, tuning unscoped |
 
 ## Milestone 1 — the loop works (done)
 
@@ -227,9 +235,47 @@ agent to run `csx ready` once at session start.
 
 ## Milestone 4 — the rest
 
-- [ ] `csx impl <symbol>` via `textDocument/implementation`.
-- [ ] `csx sym <query>` — `workspace/symbol` is already wired up in `LspClient.SymbolsAsync`.
-- [ ] Output tuning.
+- [x] `csx impl <symbol | file:line:col>` via `textDocument/implementation`. Structurally
+      `DefAsync`: same `LocateAsync`, same `SettleAsync` decompilation guard, same
+      `Output.WriteLocationsAsync`. No `Protocol.cs` edit — `TextDocumentPositionParams`
+      already existed — and no two-shape reader, for a stronger reason than `def` has: the
+      client declares no `textDocument.implementation` capability node at all, so
+      `linkSupport` is absent by construction and the server owes us `Location[]`.
+      **Probed on the wire before it was designed**, which changed a case: fired at a member
+      with no implementations, Roslyn does *not* answer empty — it returns the declaration
+      itself, exactly as `definition` does at a declaration. So `impl` on an ordinary method
+      is `def`, the planned `impl-none-fails` case was impossible, and
+      `impl-falls-through-to-declaration` pins that behaviour instead. Empty comes back only
+      for a position that resolves to no symbol, and `impl-no-symbol-fails` pins the exit 1.
+      Exit 1 on empty rather than the `diag` / `outline` exit-0-is-an-answered-query rule,
+      for consistency with `refs` and `def`: the empty case here is a failed lookup, not an
+      empty answer.
+      Fixture: `Core/Shape.cs` declares `IShape` and `Unit`, `App/Square.cs` the second
+      implementer. The split across projects is the point — a pair inside Core resolves in
+      one compilation and passes even with cross-project binding broken. Neither file touches
+      `Greet`, `Farewell` or `Cheer`, so every pinned reference count is undisturbed, and
+      `Square.cs` sorts after `Program.cs` so `InferSentinel` still picks `Program`.
+- [x] `csx sym <query>` — `workspace/symbol` was already wired up in `LspClient.SymbolsAsync`.
+      A search, not a resolution: the query goes to the server as written, with no dotted
+      narrowing, no ambiguity error and no candidate dump, since several matches are the
+      point. Renders through a new `Output.WriteSymbols` — see the DESIGN.md note on why it
+      is a second, narrower exception to the output rules. It fetches no source text at all,
+      so a broad query costs no per-hit round trips; that is also why its JSON has no `text`
+      field where `refs` and `outline` have one.
+      The retry-while-empty loop that lived inside `MatchSymbolsAsync` is now
+      `Program.QuerySymbolsAsync`, shared by both. `sym` needs it for the same reason `refs`
+      does: the sentinel proves the workspace loaded, not that every project did, and a query
+      fired in that window answers nothing — indistinguishable from a typo. It retries on the
+      *selection*, not on the raw answer, because a name declared in two projects returns the
+      loaded one's symbols immediately.
+- [ ] Output tuning. **Unscoped** — this item names nothing concrete and cannot be worked
+      until it does. The one tuning item written down anywhere is DESIGN.md's: a generated
+      document's label is built only from URI fields that are stable across runs, none of
+      which identify the *consuming* project, so one generator applied to several projects
+      renders several distinct documents identically. That one is explicitly deferred until a
+      fixture has two projects consuming one generator, and wiring it needs the resolved
+      symbol's project carried alongside the URI, since a reference location carries only a
+      URI and a range.
 
 ## Acceptance criteria
 
@@ -252,6 +298,8 @@ agent to run `csx ready` once at session start.
       disk, and comes back when it is restored, against a daemon that outlives both queries
 - [x] A run that silently fell back to a non-daemon server says so, and a probe forces one
 - [x] `skill/SKILL.md` exists and tells an agent not to grep for what `csx` answers
+- [x] `csx impl` resolves an interface member to implementers in two different projects
+- [x] `csx sym` searches the workspace by name, including a source-generated declaration
 
 ## Verified facts, and when
 
@@ -275,6 +323,12 @@ against 5.12.0-1.26426.8 / win-x64.
   `kind: "full"` reports. `workspace/diagnostic` also answers but returns zero reports —
   `workspaceDiagnostics: false` in its dynamic registration is honest. Roslyn leaves
   `source` null on compiler diagnostics and sends `code` as a string (`"CS0029"`).
+- `textDocument/implementation` answers `Location[]`, with zero-width ranges at the
+  implementer's name. Fired at an interface member it returns the implementing members, at an
+  interface type the implementing types, and at a base-list mention of the interface the same
+  as at the type. Fired at a member with **no** implementations it returns that member's own
+  declaration rather than nothing; only a position resolving to no symbol answers `[]`.
+  Verified 2026-09-05 against 5.12.0-1.26426.8.
 - `textDocument/definition` answers `Location[]` when the client omits
   `definition.linkSupport`, and returns the declaration itself when fired at a declaration
   rather than falling through to implementations. `textDocument/documentSymbol` returns the

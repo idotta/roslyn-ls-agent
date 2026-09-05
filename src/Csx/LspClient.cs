@@ -164,6 +164,24 @@ internal sealed class LspClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Same <c>Location[]</c> reasoning as <see cref="DefinitionAsync"/>, and for a stronger
+    /// reason: the client declares no <c>textDocument.implementation</c> capability node at
+    /// all, so <c>linkSupport</c> is absent by construction. Roslyn does not answer empty for
+    /// a member that simply has no implementations — it falls through to the declaration, so
+    /// this degenerates to <c>definition</c> on an ordinary method. Empty means the position
+    /// resolved to no symbol.
+    /// </summary>
+    public async Task<IReadOnlyList<Location>> ImplementationsAsync(string uri, Position position, CancellationToken ct)
+    {
+        await OpenAsync(uri, ct);
+        return await SettleAsync(async () =>
+            await _rpc.InvokeWithParameterObjectAsync<Location[]?>(
+                "textDocument/implementation",
+                new TextDocumentPositionParams(new TextDocumentIdentifier(uri), position),
+                ct) ?? [], ct);
+    }
+
+    /// <summary>
     /// Re-asks while the answer is decompiled metadata. Roslyn binds a <c>ProjectReference</c>
     /// to the referenced project's built assembly until that project is loaded into the
     /// workspace, so a query fired in the window between the sentinel resolving and the last
