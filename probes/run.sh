@@ -13,6 +13,14 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 root=$(pwd)
+# csx talks to the shared daemon by default, so scope this run to a daemon of its own.
+# Without the pipe name the suite would inherit whatever daemon the developer's session
+# left running -- a stale workspace could make the gate lie, and the `csx ready` below
+# would stop being a cold load. Keepalive is short because this daemon is disposable:
+# the countdown only starts once the last case disconnects.
+export ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME="csx-probe-$$"
+export ROSLYN_LANGUAGE_SERVER_DAEMON_KEEPALIVE=60
+
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -100,6 +108,106 @@ while IFS= read -r line || [ -n "$line" ]; do
     fail=$((fail + 1))
   fi
 done < probes/cases.jsonl
+
+# The only case that mutates the fixture, and the only one that needs a server to outlive
+# an invocation: rename what the generator keys on, then ask a *fresh* client whether the
+# generated symbol went away. It is a shell block rather than a cases.jsonl row for both
+# reasons -- a row is one invocation and cannot restore what it changed.
+#
+# Absence is also what an unloaded workspace looks like, so every leg gates on
+# `--sentinel Cheer`, which the rename does not touch: the workspace is provably loaded
+# before absence is concluded. Run the legs in order -- only restore-and-present proves
+# the daemon is still live and answering rather than quietly stuck.
+log "source-generator staleness"
+greeter=fixture/Core/Greeter.cs
+greeter_saved=$(mktemp)
+cp "$greeter" "$greeter_saved"
+trap 'cp "$greeter_saved" "$greeter"; rm -f "$greeter_saved"' EXIT
+
+# The daemon refreshes off its own file watcher, so both directions are eventually
+# consistent -- poll rather than trust the first answer. Each absent attempt already
+# costs the ~10s grace MatchSymbolsAsync gives a symbol before calling it missing.
+await_generated() {
+  deadline=$(( $(date +%s) + 90 ))
+  while :; do
+    out=$("$CSX" def Fixture.Core.Generated.BuildInfo.Stamp --root fixture --sentinel Cheer 2>&1)
+    rc=$?
+    if [ "$1" = present ] && [ "$rc" = 0 ]; then
+      case "$out" in *"BuildInfo.g.cs"*) return 0 ;; esac
+    fi
+    if [ "$1" = absent ] && [ "$rc" = 1 ]; then
+      case "$out" in *"no symbol matched"*) return 0 ;; esac
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      printf '%s\n' "$out" | sed 's/^/      | /'
+      return 1
+    fi
+  done
+}
+
+leg() {
+  if await_generated "$2"; then
+    printf 'PASS  %s\n' "$1"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (generated symbol never became %s)\n' "$1" "$2"
+    fail=$((fail + 1))
+  fi
+}
+
+leg staleness-baseline-present present
+sed -i 's/\bGreeter\b/GreeterRenamed/g' "$greeter"
+leg staleness-after-rename-absent absent
+cp "$greeter_saved" "$greeter"
+leg staleness-after-restore-present present
+
+# The silent non-daemon fallback, forced. The thin client falls back when it times out
+# waiting for its startup mutex (about 20 s), so holding that mutex is the entire trigger
+# -- see probes/hold-mutex.cs for why that needs a .NET process. A distinct pipe name is
+# required: the mutex only guards check-server-then-launch, so a client that finds a daemon
+# already listening never contends for it.
+#
+# Both halves of the assertion matter. Exit 0 pins that a fallback run still answers, which
+# is what makes it silent; the warning pins that csx noticed, which is the only thing between
+# an agent and blaming the latency on us.
+log "non-daemon fallback"
+fb_pipe="csx-probe-fallback-$$"
+fb_log=$(mktemp)
+dotnet run probes/hold-mutex.cs -- "$fb_pipe" 90 > "$fb_log" 2>&1 &
+fb_holder=$!
+
+fb_deadline=$(( $(date +%s) + 60 ))
+while ! grep -q held "$fb_log" 2>/dev/null; do
+  if ! kill -0 "$fb_holder" 2>/dev/null || [ "$(date +%s)" -ge "$fb_deadline" ]; then
+    break
+  fi
+  sleep 1
+done
+
+if ! grep -q held "$fb_log" 2>/dev/null; then
+  printf 'FAIL  %s (could not hold the daemon startup mutex)\n' "non-daemon-fallback-reported"
+  sed 's/^/      | /' "$fb_log"
+  fail=$((fail + 1))
+else
+  out=$(ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME="$fb_pipe" "$CSX" ready --root fixture --timeout 300 2>&1)
+  rc=$?
+  case "$out" in
+    *"daemon unreachable"*) ok=$([ "$rc" = 0 ] && echo 1 || echo 0) ;;
+    *) ok=0 ;;
+  esac
+  if [ "$ok" = 1 ]; then
+    printf 'PASS  %s\n' "non-daemon-fallback-reported"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  %s (exit %s, wanted 0 and the fallback warning)\n' "non-daemon-fallback-reported" "$rc"
+    printf '%s\n' "$out" | sed 's/^/      | /'
+    fail=$((fail + 1))
+  fi
+fi
+
+kill "$fb_holder" 2>/dev/null
+wait "$fb_holder" 2>/dev/null
+rm -f "$fb_log"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -27,3 +27,4 @@
 {"name":"outline-ambiguous-fails","args":"outline Split --root fixture","exit":"1","expect":"declared in several documents|Core/Split.cs|Core/Split.More.cs"}
 {"name":"outline-overloads-collapse","args":"outline Left --root fixture","exit":"0","expect":"Core/Split.cs|public static string Left()|public static string Left(string tag)"}
 {"name":"outline-empty-document","args":"outline Core/Empty.cs --root fixture","exit":"0","expect":"Core/Empty.cs|no symbols"}
+{"name":"no-daemon-refs","args":"refs Fixture.Core.Greeter.Greet --root fixture --no-daemon","exit":"0","expect":"Core/Greeter.cs:5|App/Program.cs:9"}

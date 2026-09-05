@@ -3,8 +3,9 @@
 Work spans multiple sessions. This file is the handoff: what is done, what is next, and which
 questions are already settled. `DESIGN.md` holds the why behind the settled ones.
 
-Last updated: 2026-09-03, after `csx def` and `csx outline` closed Milestone 2 and the
-partial-type / empty-document fixture material closed the last uncovered `outline` branches.
+Last updated: 2026-09-04, after the daemon became the default, the source-generator
+staleness legs and the forced non-daemon fallback landed in `probes/run.sh`, and
+`skill/SKILL.md` was written. Milestone 3 is done.
 
 ## Status
 
@@ -12,7 +13,7 @@ partial-type / empty-document fixture material closed the last uncovered `outlin
 |---|---|---|
 | 1 | `ready` + `refs`, cross-project fixture, probe gate, both workflows | **done** |
 | 2 | The hard fixture cases and the read commands | **done** |
-| 3 | Daemon mode, then `skill/SKILL.md` | not started |
+| 3 | Daemon mode, then `skill/SKILL.md` | **done** |
 | 4 | Remaining commands and output tuning | not started |
 
 ## Milestone 1 — the loop works (done)
@@ -129,18 +130,23 @@ semicolon, say), and waiting on readiness does not help because the document is 
 ## Milestone 3 — daemon and skill
 
 Wire behaviour was probed on 2026-09-04 before anything was designed around it; the daemon
-entries under "Verified facts" are the output. Three findings move this milestone: the daemon
+entries under "Verified facts" are the output. Three findings moved this milestone: the daemon
 is **shared**, not per-client; `LspClient` needs no protocol change at all; and source-generator
 staleness is already reachable without any client work.
 
-- [ ] Switch `ServerArgs` to `--daemon-mode`. Do **not** pass `--clientProcessId`; it makes the
-      server exit when the client does, which defeats the point. Built during the probe as the
-      instrument and currently uncommitted: `ServerArgs.Daemon` plus a `--daemon` opt-in flag
-      threaded through `Options` into `LspClient.StartAsync`.
-- [ ] **Decide default-on versus opt-in.** ~3.2x on `refs` argues for default-on with an opt-out,
-      but a shared daemon that outlives the run means `probes/run.sh` stops exercising cold load
-      unless it scopes itself with `ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME` and a short
-      keepalive.
+- [x] Switch `ServerArgs` to `--daemon-mode`. Do **not** pass `--clientProcessId`; it makes the
+      server exit when the client does, which defeats the point.
+- [x] **Decided: daemon on by default, `--no-daemon` to opt out.** ~3.2x on `refs` is the whole
+      value for an agent, and the cold path stays reachable for anyone who needs it.
+      `probes/run.sh` keeps its cold-load coverage by scoping itself with
+      `ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME=csx-probe-$$` plus a 60 s keepalive, so the suite
+      gets a daemon of its own rather than inheriting whatever the developer's session left
+      running — a stale daemon would otherwise let the gate lie. Accepted costs: `--log-level`
+      against an already-running daemon is silently a no-op (the daemon takes its configuration
+      from whoever launched it), and the silent non-daemon fallback is now the *default* path's
+      failure mode, which is why `csx` reports it. `no-daemon-refs` is the one case that
+      still runs a dedicated server, since the whole suite would otherwise stop covering that
+      path — which is also the path a fallback takes.
 - [x] Verify what a second concurrent client gets. It **shares** the first client's daemon; the
       earlier "own isolated server instance" wording here was a wrong guess, and sharing is the
       documented design. One daemon served two different `--root`s with no symbol leakage in
@@ -152,21 +158,64 @@ staleness is already reachable without any client work.
       after the last client disconnects, and the env var propagates by plain inheritance through
       the whole launch chain.
 - [x] Re-measure latency warm and update the README table.
-- [ ] **Source-generator staleness**, carried over from Milestone 2. No longer blocked, and it
-      needs neither `didChange` nor a `didChangeWatchedFiles` capability — the daemon runs its
-      own file watcher. Query `Fixture.Core.Generated.BuildInfo.Stamp`, rename `Greeter` (the
-      syntax provider the generator keys on) on disk, re-query with a fresh client against the
-      same daemon, assert the generated symbol goes away — then restore and assert it comes
-      back. Ran 3/3 deterministic in both directions during the probe.
-      **Two things the case must get right.** Absence is also what an unloaded workspace looks
-      like, so the rename leg can pass for the wrong reason; gate it on `--sentinel Cheer`,
-      which the rename does not touch, so the workspace is provably loaded before absence is
-      concluded. Only the restore-and-present leg proves the daemon is live and correct — run
-      the pair in order. This is also the first probe case that writes to the fixture, so
-      `run.sh` must restore `fixture/Core/Greeter.cs` even on failure.
-- [ ] Assert on the silent non-daemon fallback (see the daemon facts below) — a fallback run
-      answers correctly and only latency or one stderr line gives it away.
-- [ ] Write `skill/SKILL.md`.
+- [x] **Source-generator staleness**, carried over from Milestone 2. Needed neither `didChange`
+      nor a `didChangeWatchedFiles` capability — the daemon runs its own file watcher. Three
+      legs at the end of `probes/run.sh`, not `cases.jsonl` rows: a row is one invocation and
+      cannot restore what it changed. Baseline present, rename `Greeter` on disk (the syntax
+      provider the generator keys on) and assert the generated symbol goes away, restore and
+      assert it comes back. Both directions were immediate and deterministic — the poll loop
+      is insurance, not a measured need. Every leg gates on `--sentinel Cheer`, which the
+      rename does not touch, so absence is never concluded from an unloaded workspace; the
+      legs run in order because only restore-and-present proves the daemon is still live. A
+      `trap ... EXIT` restores `fixture/Core/Greeter.cs` even on failure.
+- [x] Assert on the silent non-daemon fallback. `csx` **detects** it — `LspClient` scans the
+      thin client's stderr for `Falling back to non-daemon mode` /
+      `Running language server in non-daemon fallback mode` and prints
+      `csx: daemon unreachable; this run used its own cold server`, read after the command
+      rather than right after connecting because the marker races the initialize response.
+      `non-daemon-fallback-reported` at the end of `run.sh` **forces** one: the thin client
+      falls back when it times out waiting for a mutex named `Global\<pipeName>.client`
+      (~20 s), so `probes/hold-mutex.cs` holds it while one client starts. The case needs its
+      own pipe name — the mutex only guards check-server-then-launch, so a client that finds a
+      daemon already listening never contends for it — and asserts both exit 0 (a fallback run
+      still answers, which is what makes it silent) and the warning (that `csx` noticed).
+      **No new project was needed**, which was the reason this was briefly deferred: .NET 10
+      runs a bare `.cs` file, and `dotnet run probes/hold-mutex.cs` compiles in under a second.
+      Two traps in that holder, both of which look like the mechanism not working rather than
+      like a mistake: the mutex must be created with `CurrentUserOnly = true` to match the
+      server, and with `CurrentSessionOnly = false` or the `Global\` prefix is rejected. Either
+      one wrong throws instead of contending, and so does passing the whole mutex name from
+      the shell: `"Global\\${pipe}.client"` in a double-quoted bash string yields a literal
+      `${pipe}`, so the holder guards a name nothing contends for and the case fails silently.
+      `run.sh` passes only the pipe name and the holder builds the rest. **Unverified on Linux** — .NET implements named
+      mutexes over files there, and both workflows run `ubuntu-latest`, so this is the second
+      host-dependent case in the suite after the non-ASCII ones.
+- [x] Write `skill/SKILL.md`.
+
+Three client bugs surfaced while measuring, all fixed here:
+
+- **`WaitReadyAsync` waited on `projectInitializationComplete` before polling the sentinel.**
+  A client attaching to an already-loaded daemon never sees that notification — it fired
+  before the process existed — so every warm run burned its entire timeout (300 s under
+  `run.sh`) on a workspace that was ready before it connected. It now polls the sentinel from
+  the start and keeps the notification only as diagnostic detail on the failure path. The
+  docstring had already noticed the warm case; the code had not acted on it. `--timeout 0`
+  still issues no query at all, so `premature-query-fails-loudly` still pins the timeout guard.
+- **An initialize-time connection loss escaped as an unhandled `ConnectionLostException`** and
+  discarded the server's stderr — the only thing that says why. It is now a `CsxException`
+  carrying `StderrTail()`, after a bounded wait for the process to finish exiting so stderr is
+  flushed. This is what turned the fallback experiment above from "connection lost" into the
+  exact mutex name and file:line.
+- **The sentinel resolving stopped implying every project was loaded.** Cold load closed that
+  window by accident; warm attach reaches it in seconds. Roslyn binds a `ProjectReference` to
+  the referenced project's built assembly until that project loads, so `def App/Program.cs:11:39`
+  came back as a decompiled temp file under `MetadataAsSource` — exit 0, no context lines, no
+  relation to the repo. It showed up as `def-non-ascii-json` failing once in a run where all 30
+  other cases passed. `PathUri.IsDecompiled` recognises the shape and `LspClient.SettleAsync`
+  re-asks for up to 10 s, on both `references` and `definition`. Residual risk: a `refs` answer
+  that is merely *incomplete* in that window carries no decompiled URI to detect, so nothing
+  catches it — the position form of `refs` and `def` never round-trips the symbol resolver,
+  which is where `MatchSymbolsAsync` already has its own grace period.
 
 `SKILL.md` conventions: YAML frontmatter with `name` and `description`, where the description is
 the entire triggering mechanism and should lean pushy, since skills under-trigger. Body under
@@ -195,6 +244,12 @@ agent to run `csx ready` once at session start.
 - [x] Two concurrent clients work (sharing one daemon); daemon survives killing client 1's
       process tree
 - [x] Warm command latency measured and recorded in the README
+- [x] The daemon is the default path, with `--no-daemon` as the opt-out, and the probe suite
+      still exercises a cold load
+- [x] A source-generated symbol disappears when what the generator keys on is renamed on
+      disk, and comes back when it is restored, against a daemon that outlives both queries
+- [x] A run that silently fell back to a non-daemon server says so, and a probe forces one
+- [x] `skill/SKILL.md` exists and tells an agent not to grep for what `csx` answers
 
 ## Verified facts, and when
 
@@ -271,7 +326,11 @@ flag and env-var names that appear in no `--help`.
 - **There is a silent non-daemon fallback.** The dll carries "Falling back to non-daemon mode"
   and "Running language server in non-daemon fallback mode" (a daemon startup-mutex timeout, for
   one). A fallback run still answers correctly, just cold — nothing but latency or that stderr
-  line distinguishes it. Found in the string table, not yet triggered deliberately.
+  line distinguishes it, which is why `csx` watches for it. Forced deliberately by
+  `non-daemon-fallback-reported`: the client mutex is named `Global\<pipeName>.client`, created
+  with .NET 10's `NamedWaitHandleOptions { CurrentUserOnly = true }` — a same-named mutex
+  without that option makes the thin client throw `WaitHandleCannotBeOpenedException` rather
+  than contend, which is how the name was pinned down.
 - **A root with only a `.csproj` and no solution never becomes ready**, daemon or not.
   `projectInitializationComplete` never fires and `workspace/symbol` stays empty for the full
   timeout; `--autoLoadProjects` does not discover a bare project. Adding a `.slnx` fixes it

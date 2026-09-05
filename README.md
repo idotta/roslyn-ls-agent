@@ -11,10 +11,11 @@ Two constraints drive the design:
 1. **Official tooling only.** The C#-specific component in the query path is Microsoft-published.
 2. **Always current.** A weekly cron bumps the pin and a probe suite gates the bump.
 
-Status: **Milestone 2 done** — `csx ready`, `csx refs`, `csx def`, `csx outline` and
-`csx diag`, cross-project fixture, probe gate, both workflows, plus the source-generator,
-non-ASCII and deliberate-error fixture cases. `impl` / `sym` and daemon mode are
-Milestones 3–4. See [ROADMAP.md](ROADMAP.md).
+Status: **Milestone 3 done** bar one probe — `csx ready`, `csx refs`, `csx def`,
+`csx outline` and `csx diag`, cross-project fixture, probe gate, both workflows, the
+source-generator, non-ASCII and deliberate-error fixture cases, the shared server daemon on by
+default, source-generator staleness pinned, and `skill/SKILL.md`. `impl` / `sym` are
+Milestone 4. See [ROADMAP.md](ROADMAP.md).
 
 ## Use
 
@@ -25,6 +26,9 @@ csx def <symbol | file:line:col>             # where it is declared
 csx outline <file | symbol> [--max N]        # the declarations in one document
 csx diag [path] [--errors-only]              # compiler and analyzer diagnostics
 ```
+
+Add `--no-daemon` to any of them to start a private server instead of sharing the background
+daemon; see [Latency](#latency).
 
 ```
 $ csx refs Fixture.Core.Greeter.Greet --root fixture
@@ -115,20 +119,33 @@ Measured on the fixture, Windows 11 / .NET 10.0.301, debug build:
 
 The same suite on `ubuntu-latest` reaches ready in ~12 s and runs six cases in ~39 s.
 
-Milestone 1 starts a dedicated server per invocation, so every command pays a full solution
-load. Milestone 3 switches to `--daemon-mode`, where the cost is a pipe round-trip against an
-already-warm server. Measured the same way on 2026-09-04:
+Milestone 1 started a dedicated server per invocation, so every command paid a full solution
+load. Since Milestone 3 `csx` connects to the shared daemon by default and the cost is a pipe
+round-trip against an already-warm server; `--no-daemon` gets the old behaviour back. Measured
+the same way on 2026-09-04:
 
-| command | non-daemon | daemon cold | daemon warm |
-|---|---|---|---|
-| `csx ready` | 7.3 s | 6.3 s | 2.53–2.56 s |
-| `csx refs` | 9.6–10.4 s | — | 3.10–3.23 s |
-| `csx def` | — | — | 2.64–2.75 s |
-| `csx outline` | — | — | 2.59 s |
+| command | non-daemon | daemon warm |
+|---|---|---|
+| `csx ready` | 7.3 s | 2.3–2.6 s |
+| `csx refs` | 9.6–10.4 s | 3.1–5.2 s |
+| `csx def` | — | 2.6–2.8 s |
+| `csx outline` | — | 2.6 s |
 
 About 3.2x on `refs`, with little variance across repeats. The warm floor is `dotnet tool run`
 plus apphost startup plus connecting the relay — not Roslyn — so it is a floor `csx` cannot
 get under while it launches through `dotnet tool run`.
+
+One daemon is shared across every workspace on the machine, keyed by user identity and the
+server's versioned path rather than by the root, and it outlives the client that started it
+(900 s after the last client disconnects, by default). Two consequences worth knowing:
+`--log-level` is silently a no-op against a daemon someone else started, because the daemon
+takes its configuration from whoever launched it; and the thin client falls back to a private
+cold server without failing if it cannot reach the daemon, so `csx` watches its stderr for that
+and says `csx: daemon unreachable` rather than leaving you to infer it from the latency.
+
+`probes/run.sh` scopes itself to its own daemon with
+`ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME` and a short keepalive, so the gate cannot inherit a
+stale workspace and its opening `csx ready` is still a real cold load.
 
 ## The pin
 

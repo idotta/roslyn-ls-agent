@@ -17,6 +17,18 @@ internal static class PathUri
     public static bool IsGenerated(string uri) =>
         uri.StartsWith(GeneratedScheme + ":", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Whether a location is Roslyn's decompiled stand-in for a symbol it only has an assembly
+    /// for. Legitimate for a symbol from a NuGet package, and a bug's fingerprint for one whose
+    /// source is in the workspace: a <c>ProjectReference</c> binds to the referenced project's
+    /// *built assembly* until that project is itself loaded, so a query fired too early answers
+    /// with a temp file under <c>MetadataAsSource</c> instead of the repo.
+    /// </summary>
+    public static bool IsDecompiled(string uri) =>
+        !IsGenerated(uri) &&
+        ToPath(uri).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Contains("MetadataAsSource", StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Agents want repo-relative forward-slash paths, not absolute paths or URIs.</summary>
     public static string Relative(string root, string path)
     {

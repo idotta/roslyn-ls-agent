@@ -23,7 +23,7 @@ internal static partial class Program
           --log-level L     server log level (default: Warning)
           --errors-only     diag: drop warnings and below
           --json            machine-readable output
-          --daemon          use the shared multi-client server daemon
+          --no-daemon       start a dedicated server instead of the shared daemon
         """;
 
     private static async Task<int> Main(string[] argv)
@@ -53,25 +53,43 @@ internal static partial class Program
 
         await using var client = await LspClient.StartAsync(opts.Root, opts.LogLevel, opts.Daemon, cts.Token);
 
+        try
+        {
+            return await DispatchAsync(client, opts, cts.Token);
+        }
+        finally
+        {
+            // Only reached with the daemon asked for, so this says the daemon was unreachable,
+            // not that it was declined.
+            if (opts.Daemon && client.DaemonFallback)
+            {
+                Console.Error.WriteLine(
+                    "csx: daemon unreachable; this run used its own cold server");
+            }
+        }
+    }
+
+    private static async Task<int> DispatchAsync(LspClient client, Options opts, CancellationToken ct)
+    {
         switch (opts.Command)
         {
             case "ready":
                 await client.WaitReadyAsync(
-                    opts.Sentinel ?? InferSentinel(opts.Root), opts.Timeout, cts.Token);
+                    opts.Sentinel ?? InferSentinel(opts.Root), opts.Timeout, ct);
                 Console.WriteLine("ready");
                 return 0;
 
             case "refs":
-                return await RefsAsync(client, opts, cts.Token);
+                return await RefsAsync(client, opts, ct);
 
             case "def":
-                return await DefAsync(client, opts, cts.Token);
+                return await DefAsync(client, opts, ct);
 
             case "outline":
-                return await OutlineAsync(client, opts, cts.Token);
+                return await OutlineAsync(client, opts, ct);
 
             case "diag":
-                return await DiagAsync(client, opts, cts.Token);
+                return await DiagAsync(client, opts, ct);
 
             default:
                 throw new CsxException($"unknown command '{opts.Command}'\n\n{Usage}");
@@ -378,7 +396,7 @@ internal static partial class Program
             var logLevel = "Warning";
             var errorsOnly = false;
             var json = false;
-            var daemon = false;
+            var daemon = true;
 
             for (var i = 1; i < argv.Length; i++)
             {
@@ -392,7 +410,7 @@ internal static partial class Program
                     case "--log-level": logLevel = Next(argv, ref i); break;
                     case "--errors-only": errorsOnly = true; break;
                     case "--json": json = true; break;
-                    case "--daemon": daemon = true; break;
+                    case "--no-daemon": daemon = false; break;
                     default:
                         if (argv[i].StartsWith('-')) throw new CsxException($"unknown option '{argv[i]}'");
                         if (argument is not null) throw new CsxException($"unexpected argument '{argv[i]}'");
