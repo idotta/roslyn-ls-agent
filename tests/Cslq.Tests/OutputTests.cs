@@ -871,7 +871,9 @@ public class OutputTests
     /// <c>ValueTypeExtensions.cs:19:61</c> on CommunityToolkit — and position alone left them in
     /// the order the server sent, which differed between two runs of one command. Severity, code
     /// and message finish the order, so the array a caller parses is the same every run and
-    /// <c>--max</c> cuts the same set. Fed here in an order that is none of those.
+    /// <c>--max</c> cuts the same set. Fed here in an order that is none of those. The second
+    /// call is the reason this matters: the cut happens after this sort, so a tie straddling the
+    /// boundary changed the set that came back rather than merely rearranging it.
     /// </summary>
     [Fact]
     public async Task Findings_at_one_position_are_ordered_by_severity_then_code_then_message()
@@ -898,9 +900,28 @@ public class OutputTests
                 "info IDE0300: Slice can be simplified",
                 "hint IDE0300: Collection initialization can be simplified",
             ],
-            json.GetProperty("results").EnumerateArray().Select(r =>
-                $"{r.GetProperty("severity").GetString()} {r.GetProperty("code").GetString()}: " +
-                r.GetProperty("message").GetString()));
+            Rendered(json));
+
+        var cut = JsonDocument.Parse(await CaptureAsync(() => Output.WriteDiagnosticsAsync(
+            Root,
+            [
+                At("IDE0300", 4, "Collection initialization can be simplified"),
+                At("IDE0300", 3, "Slice can be simplified"),
+                At("IDE0230", 3, "Use UInt32 overload"),
+                At("CS0029", 1, "Cannot implicitly convert"),
+                At("IDE0300", 3, "Collection initialization can be simplified"),
+            ],
+            2,
+            0,
+            json: true,
+            Plain))).RootElement;
+
+        Assert.Equal(
+            ["error CS0029: Cannot implicitly convert", "info IDE0230: Use UInt32 overload"],
+            Rendered(cut));
+        // The count is the whole answer rather than what survived the cut, so it does not move.
+        Assert.Equal(5, cut.GetProperty("count").GetInt32());
+        Assert.True(cut.GetProperty("truncated").GetBoolean());
     }
 
     /// <summary>
@@ -1001,6 +1022,11 @@ public class OutputTests
             1,
             JsonDocument.Parse($"\"{code}\"").RootElement,
             "boom");
+
+    private static IEnumerable<string> Rendered(JsonElement json) =>
+        json.GetProperty("results").EnumerateArray().Select(r =>
+            $"{r.GetProperty("severity").GetString()} {r.GetProperty("code").GetString()}: " +
+            r.GetProperty("message").GetString());
 
     /// <summary>One document, one position: only severity, code and message separate these.</summary>
     private static Report At(string code, int severity, string message) =>
