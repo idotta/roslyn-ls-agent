@@ -17,6 +17,16 @@ internal sealed partial class LspClient : IAsyncDisposable
     private readonly Dictionary<string, (Staleness.Stamp? Stamp, string[] Lines)> _lines =
         new(PathUri.PathComparer);
     private readonly Dictionary<string, IReadOnlyList<DocumentContext>> _contexts = new(PathUri.PathComparer);
+    /// <summary>
+    /// The sentinels already proved against the workspace this attach holds. A sentinel enters
+    /// it by having resolved — a <c>workspace/symbol</c> hit this client's own
+    /// <see cref="Sentinel.Accepts"/> scoped to that project's directory — and nothing can make
+    /// that observation false again while the client lives, so the round is not paid twice.
+    /// An instance field rather than a static: it has to die with the attach, so a session that
+    /// re-attaches after the project graph changed leaves the old client's proofs behind.
+    /// </summary>
+    private readonly HashSet<string> _proved = new(StringComparer.Ordinal);
+
     private readonly bool _daemon;
     private readonly CancellationToken _ct;
 
@@ -425,12 +435,19 @@ internal sealed partial class LspClient : IAsyncDisposable
     /// bound from and nothing that should be bounded — that is the load itself, and the full
     /// timeout is what is wanted. A <c>--timeout</c> shorter than the grace still wins.
     /// </para>
+    /// <para>
+    /// A sentinel that has resolved is remembered in <see cref="_proved"/> and not asked
+    /// again for the life of this attach — see <see cref="Unproved"/> for why that is a set
+    /// rather than a flag. Nothing else is cached: a sentinel that has never resolved is
+    /// re-probed on every call, with this same deadline and grace, and the whole failure path
+    /// below is untouched.
+    /// </para>
     /// </summary>
     public async Task WaitReadyAsync(
         IReadOnlyList<Sentinel> sentinels, TimeSpan timeout, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + timeout;
-        var pending = sentinels.Where(s => s.Candidates.Count > 0).ToList();
+        var pending = Unproved(sentinels, _proved);
         var unprobed = sentinels.Where(s => s.Candidates.Count == 0 && !s.Skipped).ToList();
         var linked = sentinels.Where(s => s.Skipped).ToList();
         DateTime? loaded = null;
@@ -440,6 +457,11 @@ internal sealed partial class LspClient : IAsyncDisposable
             // One round for every project at once, so a warm workspace costs a single
             // round trip's wall-clock rather than one per project.
             var resolved = await Task.WhenAll(pending.Select(s => ResolvesAsync(s, ct)));
+            for (var i = 0; i < pending.Count; i++)
+            {
+                if (resolved[i]) _proved.Add(ProofKey(pending[i]));
+            }
+
             pending = [.. pending.Where((_, i) => !resolved[i])];
             if (pending.Count == 0) return;
             if (_endpoints.ProjectInitialized.IsCompleted) loaded ??= DateTime.UtcNow;
@@ -551,6 +573,29 @@ internal sealed partial class LspClient : IAsyncDisposable
     /// <summary>The same, in the grammatical position the failure text puts it in.</summary>
     private static string Subject(Sentinel sentinel) =>
         sentinel.Explicit ? Name(sentinel) : $"project {Name(sentinel)}";
+
+    /// <summary>
+    /// Which sentinels still have to be asked: the ones that contribute a candidate and have
+    /// not already proved themselves against this attach. A <em>set</em> of proofs rather than
+    /// a single ready flag, because <c>Program.Sentinels</c> recomputes the list from disk on
+    /// every request — a project added after the session started is therefore absent from the
+    /// set and probed, where a flag would skip it silently and hand back the incomplete answer
+    /// at exit 0 that the per-project set was introduced to end.
+    /// </summary>
+    internal static List<Sentinel> Unproved(
+        IEnumerable<Sentinel> sentinels, IReadOnlySet<string> proved) =>
+        [.. sentinels.Where(s => s.Candidates.Count > 0 && !proved.Contains(ProofKey(s)))];
+
+    /// <summary>
+    /// A sentinel's own identity, never its position in the list. A project is its directory;
+    /// the probe an explicit <c>--sentinel</c> adds is not a project — its directory is the
+    /// root — so it is keyed by the candidates that are the whole of what it asks, and the two
+    /// kinds are prefixed apart so a project directory can never read as an explicit probe.
+    /// </summary>
+    internal static string ProofKey(Sentinel sentinel) => sentinel.Explicit
+        ? "explicit " + string.Join(' ', sentinel.Candidates)
+        : "project " + Path.GetFullPath(sentinel.Directory).TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
     /// <summary>
     /// Whether any of a project's candidate sentinels resolves to a hit the project accepts —

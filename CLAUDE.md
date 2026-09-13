@@ -94,8 +94,26 @@ anything works: the unit tests alone prove nothing about the server's behaviour.
   projects kept resolving for 6-8 s after it on CommunityToolkit, which is the length the
   grace has to cover and the reason it is 20 s rather than zero. **Never bound it when the
   notification has not fired**: that state means the load this client asked for has not
-  finished, and the incomplete-answer window is inside it.
-  `exhausted-candidate-fails-after-load` is the leg.
+  finished, and the incomplete-answer window is inside it — and on a repository where the
+  notification never fires at all (see the daemon bullet) the grace never applies, so an
+  unresolvable candidate there holds the whole `--timeout` and the failure text stays on the
+  still-loading wording. `exhausted-candidate-fails-after-load` is the leg.
+- **A sentinel that resolved is proved for the life of the attach, and the proof is a set of
+  per-project keys rather than a ready flag.** `LspClient._proved` holds one key per sentinel
+  that has answered — `LspClient.ProofKey`, the project's own directory, or the candidates for
+  the probe an explicit `--sentinel` adds, since that one's directory is the root — and
+  `LspClient.Unproved` is what the round is narrowed to. It has to be a set: `Program.Sentinels`
+  recomputes the list from disk on every request, so a project added after the session started
+  appears in a later call and must still be probed, which is exactly what a flag would skip at
+  exit 0. Nothing negative is ever cached; a sentinel that has not resolved is re-asked every
+  call with the same deadline and grace, and the whole failure path is untouched. Without it a
+  warm session re-proved every project on every request, which *was* the request: measured
+  2026-09-13 on OrchardCore (214 projects), a warm `outline` of one file spent 7.6-18.6 s of its
+  7.7-19.5 s inside `WaitReadyAsync` and went to ~60 ms total with the proof kept; on
+  CleanArchitecture (12 projects) it saves the ~7 ms it costs there. The 214-project number is
+  the only one that matters and the fixture cannot show it — four projects put the saving inside
+  the noise — so **no probe case guards this**; `ReadyProofTests` pins the predicate instead,
+  and a timing leg here would be a coin flip that passes on the breakage it exists to catch.
 - **The readiness failure text is assembled in `Readiness.Message`, one item per line, and
   what it says about the notification is a sentence rather than its name.** On a 26-project
   repository the old single line ran to 1,050 characters. Two wordings are load-bearing.
@@ -516,14 +534,23 @@ anything works: the unit tests alone prove nothing about the server's behaviour.
     sending `workspaceFolders`, and that is measured to leave the client with an **empty**
     workspace rather than the daemon's loaded one — no cslq-side fix exists at the
     `initialize` layer. Consequences, all measured rather than inferred:
-    - **`workspace/projectInitializationComplete` fires once per attach**, warm daemon
-      included: it marks the end of *this client's* reload, not the daemon's history. (This
-      bullet used to say it never fires on a warm attach. That was wrong, but the fix it
-      justified was not: `WaitReadyAsync` polls the sentinels from the start rather than
-      blocking on the notification, and that is right for a reason the bullet got to by
-      accident — the notification comes *after* the load it terminates, so blocking on it
-      first would still cost the whole reload.) It fires only for a client that sends
-      workspace folders, because that is what triggers the reload it terminates.
+    - **`workspace/projectInitializationComplete` fires at most once per attach, and on a
+      large repository it does not fire at all.** Measured 2026-09-13 with the flag dumped on
+      every request: on OrchardCore it was still unfired at the end of the cold load and on
+      every one of five warm calls, i.e. more than ten minutes into one attach, while
+      CleanArchitecture fired normally and answered `True` from its first warm call on.
+      **Readiness does not depend on it** — `WaitReadyAsync` returns the moment every sentinel
+      resolves, fired or not, which is how OrchardCore is ready at all — and that is exactly
+      why this is dangerous: anything *gated* on the notification silently does nothing on
+      the repositories big enough to need it, with no error and no slow path to notice.
+      Do not write such a gate, and do not read an unfired notification as a workspace that
+      has not loaded. What it really bounds is the *failure* path, one bullet below. (This
+      bullet used to say it fires on every attach, warm daemon included, and before that that
+      it never fires on a warm one. Both were generalisations from one repository. The fix
+      the second one justified was right anyway: `WaitReadyAsync` polls the sentinels from
+      the start rather than blocking on the notification, which it would have to do regardless
+      — the notification comes *after* the load it terminates.) It never fires for a client
+      that sends no workspace folders, since that is what triggers the reload it ends.
     - **The notification does not mean every project is queryable.** On CommunityToolkit
       sentinels resolved progressively *through* the reload — 8 of 12 projects before the
       notification, spread over 20 s — and four kept resolving for a further 6-8 s *after*
