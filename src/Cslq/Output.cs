@@ -283,6 +283,15 @@ internal static class Output
             .OrderBy(f => f.Display, StringComparer.OrdinalIgnoreCase)
             .ThenBy(f => f.Diagnostic.Range.Start.Line)
             .ThenBy(f => f.Diagnostic.Range.Start.Character)
+            // Position alone is not a total order -- one position carries several findings, and
+            // a stable sort would then leave them in the order the server happened to send. The
+            // rest of `Reports`' own fold key finishes it: ascending severity, so an error at a
+            // position comes before a warning and a warning before an info, then code and
+            // message. Two findings that agree on all five are one finding and are already
+            // folded, so `--max` now truncates the same set on every run.
+            .ThenBy(f => f.Diagnostic.Severity)
+            .ThenBy(f => Code(f.Diagnostic.Code), StringComparer.Ordinal)
+            .ThenBy(f => f.Diagnostic.Message, StringComparer.Ordinal)
             .ToList();
 
         var shown = hits.Take(max).ToList();
